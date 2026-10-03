@@ -8,6 +8,7 @@ const { fetchSuggestions, buildSuggestions } = require('./lib/suggest');
 const { buildOffers } = require('./lib/extract');
 const { Store } = require('./lib/store');
 const { Catalog } = require('./lib/catalog');
+const { clientIp, RateLimiter, Budget, Semaphore, isPublicHost, SECURITY_HEADERS } = require('./lib/guard');
 const { spawn } = require('child_process');
 
 // --- tiny .env loader ---------------------------------------------------------
@@ -21,7 +22,8 @@ const { spawn } = require('child_process');
 })();
 
 const PORT = Number(process.env.PORT) || 3000;
-const HOST = process.env.HOST || '127.0.0.1';
+const PROD = process.env.NODE_ENV === 'production' || !!process.env.RAILWAY_ENVIRONMENT || !!process.env.RENDER;
+const HOST = process.env.HOST || (PROD ? '0.0.0.0' : '127.0.0.1');
 const API_KEY = (process.env.TAVILY_API_KEY || '').trim();
 const LIVE = /^tvly-/.test(API_KEY) && !/your-key-here/.test(API_KEY);
 const ZOOWORK_KEY = /^zwp_/.test((process.env.ZOOWORK_API_KEY || '').trim()) ? process.env.ZOOWORK_API_KEY.trim() : '';
@@ -58,6 +60,20 @@ const catalog = new Catalog({
   timeoutMs: Number(process.env.CATALOG_TIMEOUT_MS) || 400,
 });
 let importer = null; // running catalog import (child process)
+
+// Public-traffic protection (defaults are generous for one person, safe for a public URL).
+const num = (k, d) => (process.env[k] !== undefined && process.env[k] !== '' ? Number(process.env[k]) : d);
+const limiter = new RateLimiter();
+const budget = new Budget({
+  tavily: num('TAVILY_DAILY_LIMIT', PROD ? 400 : 0),             // full searches per day (0 = no cap)
+  suggestTavily: num('SUGGEST_TAVILY_DAILY_LIMIT', PROD ? 1500 : 0), // Tavily type-ahead fallbacks per day
+  zoowork: num('ZOOWORK_DAILY_LIMIT', PROD ? 300 : 0),           // store-page checks per day
+});
+const zooworkSlots = new Semaphore(num('ZOOWORK_GLOBAL_MAX', 6)); // parallel ZooWork sessions across all visitors
+const LIMITS = {
+  searchPerMin: num('SEARCH_PER_MINUTE', 6), searchPerHour: num('SEARCH_PER_HOUR', 60),
+  suggestPerMin: num('SUGGEST_PER_MINUTE', 90), imgPerMin: num('IMAGES_PER_MINUTE', 400),
+};
 function startCatalogImport() {
   if (importer || catalog.status !== 'ready') return;
   console.log('[catalog] starting the product catalog import in the background (Amazon Reviews 2023 → Moss). Type-ahead uses Tavily until it has data.');
@@ -120,6 +136,17 @@ async function handleSearch(req, res, url) {
     return end();
   }
 
+  const ip = clientIp(req);
+  const rl = limiter.allow(`search:m:${ip}`, LIMITS.searchPerMin, 60_000).ok ? limiter.allow(`search:h:${ip}`, LIMITS.searchPerHour, 3600_000) : { ok: false, retryAfterSec: 60 };
+  if (!rl.ok) {
+    send('error', { error: `Too many searches — please wait ${rl.retryAfterSec} seconds and try again.` });
+    return end();
+  }
+  if (LIVE && !budget.take('tavily')) {
+    send('error', { error: 'PriceScout has reached today’s search limit. Please come back tomorrow.' });
+    return end();
+  }
+
   if (!LIVE) {
     const { offers, summary } = buildOffers(DEMO, 'Sony WH-1000XM5');
     step('tavily', 'skipped', 'Demo mode — add TAVILY_API_KEY to .env for live search');
@@ -135,7 +162,7 @@ async function handleSearch(req, res, url) {
   console.log(`[search] "${q}" (${scope}) started`);
   try {
     const result = await runSearch({
-      query: q, scope, tavilyKey: API_KEY, zooworkKey: ZOOWORK_KEY, depth: DEPTH, store, signal: ctrl.signal,
+      query: q, scope, tavilyKey: API_KEY, zooworkKey: ZOOWORK_KEY, depth: DEPTH, store, signal: ctrl.signal, gate: { budget, semaphore: zooworkSlots },
       emit: (ev) => {
         if (ev.type === 'step') {
           if (ev.system !== 'store') console.log(`  [${ev.system}] ${ev.status}: ${ev.detail}`);
@@ -164,6 +191,7 @@ async function handleSearch(req, res, url) {
 async function handleSuggest(req, res, url) {
   const q = (url.searchParams.get('q') || '').trim().replace(/\s+/g, ' ').slice(0, 80);
   if (q.length < 3 || !SUGGEST_ENABLED) return sendJson(res, 200, { query: q, suggestions: [] });
+  if (!limiter.allow(`suggest:${clientIp(req)}`, LIMITS.suggestPerMin, 60_000).ok) return sendJson(res, 429, { query: q, suggestions: [], error: 'Slow down a little' });
   const t0 = Date.now();
   const memo = await store.get('suggest', { key: q, query: q, maxAgeMs: TTL.suggest });
   if (memo) return sendJson(res, 200, { query: q, ...memo.payload, cached: true, tookMs: Date.now() - t0 });
@@ -181,6 +209,7 @@ async function handleSuggest(req, res, url) {
     const suggestions = [...(fromMoss || []), ...fixtures.flatMap((fx) => buildSuggestions(fx, q))].slice(0, 7);
     return sendJson(res, 200, { query: q, suggestions, source: 'demo', demo: true });
   }
+  if (!budget.take('suggestTavily')) return sendJson(res, 200, { query: q, suggestions: fromMoss || [], source: 'moss' });
   try {
     const raw = await fetchSuggestions(q, { apiKey: API_KEY });
     const fromTavily = buildSuggestions(raw, q);
@@ -211,6 +240,7 @@ async function handleImage(req, res, url) {
   let u;
   try { u = new URL(src); } catch { res.writeHead(400); return res.end(); }
   if (!/^https?:$/.test(u.protocol) || PRIVATE_HOST.test(u.hostname) || !u.hostname.includes('.')) { res.writeHead(400); return res.end(); }
+  if (!limiter.allow(`img:${clientIp(req)}`, LIMITS.imgPerMin, 60_000).ok) { res.writeHead(429); return res.end(); }
   const key = crypto.createHash('sha1').update(u.href).digest('hex');
   const file = path.join(IMG_DIR, key);
   const serve = (type, buf, hit) => {
@@ -225,11 +255,21 @@ async function handleImage(req, res, url) {
     let p = imgInflight.get(key);
     if (!p) {
       p = (async () => {
-        const r = await fetch(u.href, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36', Accept: 'image/avif,image/webp,image/*,*/*;q=0.8' },
-          signal: AbortSignal.timeout(8000),
-          redirect: 'follow',
-        });
+        // Follow up to 3 redirects manually, re-checking every hop (DNS-resolved) for private addresses.
+        let target = u;
+        let r;
+        for (let hop = 0; hop <= 3; hop++) {
+          if (!/^https?:$/.test(target.protocol) || !(await isPublicHost(target.hostname))) throw new Error('blocked host');
+          r = await fetch(target.href, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36', Accept: 'image/avif,image/webp,image/*,*/*;q=0.8' },
+            signal: AbortSignal.timeout(8000),
+            redirect: 'manual',
+          });
+          const loc = r.status >= 300 && r.status < 400 && r.headers.get('location');
+          if (!loc) break;
+          target = new URL(loc, target);
+          if (hop === 3) throw new Error('too many redirects');
+        }
         const type = (r.headers.get('content-type') || '').split(';')[0];
         if (!r.ok || !type.startsWith('image/') || type === 'image/svg+xml') throw new Error(`bad image ${r.status} ${type}`);
         const buf = Buffer.from(await r.arrayBuffer());
@@ -269,6 +309,7 @@ function serveStatic(req, res, url) {
 }
 
 const server = http.createServer((req, res) => {
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (req.method !== 'GET') {
     res.writeHead(405);
@@ -277,7 +318,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/api/search') return void handleSearch(req, res, url);
   if (url.pathname === '/img') return void handleImage(req, res, url);
   if (url.pathname === '/api/suggest') return void handleSuggest(req, res, url);
-  if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true, mode: LIVE ? 'live' : 'demo', depth: DEPTH, verification: ZOOWORK_KEY ? 'zoowork' : 'off', moss: MOSS_ON ? store.info() : 'disabled', catalog: { ...catalog.info(), importing: !!importer } });
+  if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true, mode: LIVE ? 'live' : 'demo', depth: DEPTH, verification: ZOOWORK_KEY ? 'zoowork' : 'off', moss: MOSS_ON ? store.info() : 'disabled', catalog: { ...catalog.info(), importing: !!importer }, budget: budget.info() });
   serveStatic(req, res, url);
 });
 
@@ -296,7 +337,8 @@ if (require.main === module) {
     if (catalog.status !== 'ready') return;
     let state = {};
     try { state = JSON.parse(fs.readFileSync(path.join(__dirname, '.cache', 'catalog-import.json'), 'utf8')); } catch {}
-    if (process.env.CATALOG_AUTO_IMPORT !== 'false' && !state.completedAt) startCatalogImport();
+    const auto = process.env.CATALOG_AUTO_IMPORT ? process.env.CATALOG_AUTO_IMPORT === 'true' : !PROD; // never auto-import on a cloud host
+    if (auto && !state.completedAt) startCatalogImport();
   });
   const flushAndExit = () => {
     if (importer) importer.kill();

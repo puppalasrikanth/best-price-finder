@@ -20,6 +20,23 @@ Without a key the portal runs in **demo mode** using saved sample results, so yo
 
 Each new search uses 2 Tavily credits (`SEARCH_DEPTH=advanced`), or 1 credit with `SEARCH_DEPTH=basic`. Repeat searches within `CACHE_MINUTES` (default 30) are free. The free Tavily plan includes 1,000 credits per month.
 
+## Deploying publicly (Railway)
+
+`railway.json` runs `node server.js` with a health check on `/api/health`. Set these variables on the service (never commit `.env`): `TAVILY_API_KEY`, `ZOOWORK_API_KEY`, `MOSS_PROJECT_ID`, `MOSS_PROJECT_KEY`, `NODE_ENV=production`, `SEARCH_DEPTH=fast`, `MOSS_ENABLED=false`. In production the server listens on `0.0.0.0:$PORT` and does not auto-import the catalog (it reads the Moss index you imported locally).
+
+Protection for public traffic (all adjustable by env var):
+
+| Limit | Default (production) |
+|---|---|
+| Searches per visitor | 6 / minute, 60 / hour (`SEARCH_PER_MINUTE`, `SEARCH_PER_HOUR`) |
+| Type-ahead requests per visitor | 90 / minute (`SUGGEST_PER_MINUTE`) |
+| Tavily searches per day (all visitors) | 400 (`TAVILY_DAILY_LIMIT`, 0 = no cap) |
+| Tavily type-ahead fallbacks per day | 1,500 (`SUGGEST_TAVILY_DAILY_LIMIT`) |
+| ZooWork store checks per day | 300 (`ZOOWORK_DAILY_LIMIT`) |
+| Parallel ZooWork sessions (all visitors) | 6 (`ZOOWORK_GLOBAL_MAX`) |
+
+The image proxy resolves DNS and refuses private, loopback and cloud-metadata addresses (every redirect hop is re-checked), and every response carries security headers (CSP, no framing, nosniff).
+
 ## Moss
 
 **Product catalog for type-ahead (on).** Moss index `pricescout-products` holds product names for instant suggestions while typing:

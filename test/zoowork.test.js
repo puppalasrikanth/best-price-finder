@@ -44,3 +44,20 @@ test('runs checks in parallel up to the pool size', async () => {
   assert.strictEqual(peak, 3);
   assert.strictEqual(offerId('https://a.com/x'), offerId('https://a.com/x#frag'));
 });
+
+test('search without a ZooWork key still returns offers (regression)', async () => {
+  const http = require('http');
+  const demo = require('../fixtures/demo.json');
+  const srv = http.createServer((req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(demo)); });
+  await new Promise((r) => srv.listen(0, r));
+  process.env.TAVILY_API_URL = `http://127.0.0.1:${srv.address().port}`;
+  delete require.cache[require.resolve('../lib/tavily')];
+  delete require.cache[require.resolve('../lib/pipeline')];
+  const { runSearch } = require('../lib/pipeline');
+  const events = [];
+  const out = await runSearch({ query: 'Sony WH-1000XM5', scope: 'stores', tavilyKey: 'tvly-x', zooworkKey: '', depth: 'fast', emit: (e) => events.push(e.type) });
+  srv.close();
+  assert.ok(out.offers.length > 0);
+  assert.strictEqual(out.verification, 'off');
+  assert.ok(events.includes('preliminary'));
+});
