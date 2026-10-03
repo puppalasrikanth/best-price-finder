@@ -4,3 +4,4 @@ node_modules/
 .zoowork-agent.json
 _to_delete/
 *.tgz
+.cache/

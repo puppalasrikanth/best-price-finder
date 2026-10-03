@@ -53,6 +53,7 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const discount = (o) => (o.wasPrice && o.price ? Math.round((1 - o.price / o.wasPrice) * 100) : 0);
   const fmtDay = (iso) => { const d = new Date(`${iso}T12:00:00`); return `${MONTHS[d.getMonth()]} ${d.getDate()}`; };
+  const agoText = (ms) => { const m = Math.round(ms / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; };
   const fmtMonth = (m) => `${MONTHS[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}`;
   window.__ph = PLACEHOLDER;
   const imgHtml = (src, alt) => (src ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.outerHTML=window.__ph">` : PLACEHOLDER);
@@ -264,6 +265,19 @@
     progressDetails.scrollTop = progressDetails.scrollHeight;
   }
   function onStep(ev) {
+    if (ev.system === 'moss') {
+      let chip = sites.get('moss');
+      if (!chip) {
+        chip = document.createElement('span');
+        chip.className = 'site moss';
+        progressNow.prepend(chip);
+        sites.set('moss', chip);
+      }
+      chip.textContent = `⚡ ${ev.detail}`;
+      chip.dataset.status = 'done';
+      log('moss', ev.status, ev.detail);
+      return;
+    }
     if (ev.system === 'store' || ev.system === 'trend-source') {
       const key = `${ev.system}:${ev.detail}`;
       let chip = sites.get(key);
@@ -357,9 +371,15 @@
     let tFinished = false;
     const tFinish = () => { if (tFinished) return; tFinished = true; ts.close(); streamDone(); };
     ts.addEventListener('step', (e) => onStep(JSON.parse(e.data)));
+    ts.addEventListener('preliminary', (e) => {
+      const d = JSON.parse(e.data);
+      if (d.trend && d.trend.ok) { trend = { state: 'done', data: d.trend, stale: true, refreshing: true, cache: d.cache }; renderAll(); }
+    });
     ts.addEventListener('final', (e) => {
       const d = JSON.parse(e.data);
-      trend = d.trend && d.trend.ok ? { state: 'done', data: d.trend, demo: d.demo } : { state: 'error', reason: (d.trend && d.trend.reason) || 'No price history found' };
+      trend = d.trend && d.trend.ok
+        ? { state: 'done', data: d.trend, demo: d.demo, stale: !!d.stale, cache: d.cache }
+        : (trend && trend.state === 'done' ? { ...trend, refreshing: false } : { state: 'error', reason: (d.trend && d.trend.reason) || 'No price history found' });
       renderAll();
       tFinish();
     });
@@ -463,7 +483,8 @@
     }
     const t = trend.data;
     const b = bestOffer();
-    trendSub.textContent = `${fmtMonth(t.history[0].month)} – today, forecast to ${fmtDay(t.projection.date)} · ${t.confidence} confidence${trend.demo ? ' · sample data' : ''}`;
+    const saved = trend.cache ? ` · saved ${agoText(trend.cache.ageMs)}${trend.refreshing ? ', refreshing…' : ''}` : '';
+    trendSub.textContent = `${fmtMonth(t.history[0].month)} – today, forecast to ${fmtDay(t.projection.date)} · ${t.confidence} confidence${trend.demo ? ' · sample data' : ''}${saved}`;
     const stat = (l, v, s) => `<div class="fact"><span class="l">${l}</span><span class="v">${v}</span>${s ? `<span class="s">${s}</span>` : ''}</div>`;
     const events = (t.events || []).map((e) => `<span class="event">🏷 ${esc(e.name)} · ${fmtDay(e.start)} · ~${e.discount}% off typical</span>`).join('');
     const sources = (t.sources || []).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.name)}</a>`).join(', ');
@@ -524,9 +545,10 @@
     const best = bestOffer();
     const stores = new Set(data.offers.map((o) => o.store)).size;
     compareTitle.textContent = `Compare ${stores} store${stores === 1 ? '' : 's'}`;
-    compareSub.textContent = verifiedMode
+    const savedNote = data.cache ? (data.stale && btn.disabled ? ` · saved ${agoText(data.cache.ageMs)} — refreshing live…` : ` · from Moss, saved ${agoText(data.cache.ageMs)}`) : '';
+    compareSub.textContent = (verifiedMode
       ? `${data.summary.verifiedCount} prices confirmed on the store page by ZooWork`
-      : data.verification === 'pending' ? 'Prices from search results — ZooWork is confirming them now' : 'Prices from search results — confirm at the store';
+      : data.verification === 'pending' ? 'Prices from search results — ZooWork is confirming them now' : 'Prices from search results — confirm at the store') + savedNote;
     offersEl.className = `offers ${view}`;
     if (!list.length) { offersEl.innerHTML = '<p class="panel-sub" style="padding:12px 6px">No offers match these filters.</p>'; return; }
 

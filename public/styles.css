@@ -332,3 +332,5 @@ body.has-results .landing { display: none; }
 .sg-foot { padding: 6px 10px 4px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border); margin-top: 4px; }
 .sg-foot kbd { font: inherit; font-size: 11px; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; background: var(--surface-2); }
 @media (max-width: 680px) { .sg-foot { display: none; } .sg-store { display: none; } .sg-opt { grid-template-columns: 36px minmax(0, 1fr); } }
+.progress-now .site.moss { background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; }
+.progress-now .site.moss::before { content: none; }

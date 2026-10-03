@@ -1,13 +1,18 @@
 {
   "name": "best-price-portal",
   "version": "1.0.0",
-  "description": "PriceScout: search any product and compare prices across US retailers, powered by Tavily.",
+  "description": "PriceScout: search any product and compare verified prices across US retailers. Tavily search, ZooWork agents, Moss persistence.",
   "main": "server.js",
   "private": true,
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test test/extract.test.js test/zoowork.test.js test/trend.test.js test/suggest.test.js"
+    "test": "node --test test/extract.test.js test/zoowork.test.js test/trend.test.js test/suggest.test.js test/store.test.js"
+  },
+  "dependencies": {
+    "@moss-dev/moss": "^1.0.0"
   }
 }

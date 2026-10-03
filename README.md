@@ -4,9 +4,9 @@ Search any product and compare prices across major US retailers (Amazon, Walmart
 
 ## Run it
 
-Requires Node.js 18 or newer (`node -v`). There are no npm packages to install.
+Requires Node.js 20 or newer (`node -v`). `start.sh` installs the one dependency (the Moss SDK) on first run.
 
-1. In `.env`, set `TAVILY_API_KEY` (from https://app.tavily.com) and `ZOOWORK_API_KEY` (a `zwp_live_…` project key from https://platform.zoowork.ai)
+1. In `.env`, set `MOSS_PROJECT_ID` / `MOSS_PROJECT_KEY` (from https://moss.dev), `TAVILY_API_KEY` (from https://app.tavily.com) and `ZOOWORK_API_KEY` (a `zwp_live_…` project key from https://platform.zoowork.ai)
 2. Start the server:
    ```bash
    ./start.sh        # starts the server and opens http://localhost:3000
@@ -19,6 +19,16 @@ Without a key the portal runs in **demo mode** using saved sample results, so yo
 ## Credits
 
 Each new search uses 2 Tavily credits (`SEARCH_DEPTH=advanced`), or 1 credit with `SEARCH_DEPTH=basic`. Repeat searches within `CACHE_MINUTES` (default 30) are free. The free Tavily plan includes 1,000 credits per month.
+
+## Persistence (Moss)
+
+Every Tavily and ZooWork result (store prices, verified offers, price history, suggestions) is saved to a Moss index (`MOSS_INDEX`, default `pricescout-cache`). On startup the index is downloaded into the server process (`loadIndex` with auto-refresh and an on-disk cache in `.cache/`), so lookups are local and take a few milliseconds.
+
+- **Exact or similar searches** — a lookup matches the same query or a differently worded one for the same product (semantic + keyword search). Model numbers must match exactly, so "AirPods Pro 2" never reuses "AirPods Pro 3" results.
+- **Fresh** results (prices < 30 min, price history < 12 h, suggestions < 7 days) are served instantly with no API calls.
+- **Older** results (prices < 48 h, history < 14 days) appear instantly as a preview while live data refreshes; the live result then replaces them and is saved.
+- Writes are batched in the background, so saving never slows a response. Without Moss credentials, or if Moss is unreachable, the portal keeps working with an in-memory cache.
+- `GET /api/health` reports Moss status and hit/miss counts.
 
 ## How it works
 
