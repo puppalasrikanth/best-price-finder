@@ -4,90 +4,116 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PriceScout — Best Price Finder</title>
-  <meta name="description" content="Search any product and compare prices across major US retailers.">
+  <meta name="description" content="Search any product, compare verified prices across US stores, and see where the price is heading.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="PriceScout home">
-      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M9 17.5 15.5 11H23v7.5L16.5 25 9 17.5Z" fill="none" stroke="var(--on-accent)" stroke-width="2.2" stroke-linejoin="round"/><circle cx="19.3" cy="14.7" r="1.7" fill="var(--on-accent)"/></svg>
-      <span>PriceScout</span>
-    </a>
-    <span id="modePill" class="pill" hidden></span>
+    <div class="topbar-inner">
+      <a class="brand" href="/" aria-label="PriceScout home">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M9 17.5 15.5 11H23v7.5L16.5 25 9 17.5Z" fill="none" stroke="var(--on-accent)" stroke-width="2.2" stroke-linejoin="round"/><circle cx="19.3" cy="14.7" r="1.7" fill="var(--on-accent)"/></svg>
+        <span>PriceScout</span>
+      </a>
+      <form id="searchForm" class="search" role="search" autocomplete="off">
+        <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <input id="q" name="q" type="search" placeholder="Search a product, e.g. “AirPods Pro 2”" aria-label="Product to search" minlength="2" maxlength="120" required>
+        <div class="scope" role="radiogroup" aria-label="Where to search">
+          <button type="button" role="radio" data-scope="stores" aria-checked="true" title="Search major US retailers">Stores</button>
+          <button type="button" role="radio" data-scope="web" aria-checked="false" title="Search the whole web">Web</button>
+        </div>
+        <button type="submit" id="searchBtn" class="search-btn">Compare</button>
+      </form>
+      <span id="modePill" class="pill" hidden></span>
+    </div>
   </header>
 
   <main>
-    <section class="hero" id="hero">
-      <h1>Find the best price on anything.</h1>
-      <p class="sub">We search major US stores in real time, then an agent checks each store page to confirm the price.</p>
-
-      <form id="searchForm" class="search" role="search" autocomplete="off">
-        <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        <input id="q" name="q" type="search" placeholder="Try “AirPods Pro 2” or “Dyson V15”" aria-label="Product to search" minlength="2" maxlength="120" required>
-        <button type="submit" id="searchBtn">Compare prices</button>
-      </form>
-
-      <div class="controls">
-        <div class="segmented" role="radiogroup" aria-label="Where to search">
-          <button type="button" role="radio" data-scope="stores" aria-checked="true">Major US stores</button>
-          <button type="button" role="radio" data-scope="web" aria-checked="false">Whole web</button>
-        </div>
-        <div id="chips" class="chips" aria-label="Suggestions"></div>
-      </div>
+    <!-- Landing -->
+    <section class="landing" id="landing">
+      <p class="kicker">Smarter shopping, verified</p>
+      <h1>Know you’re paying the best price.</h1>
+      <p class="sub">PriceScout searches major US stores, has an AI agent confirm each price on the store’s own page, and shows where the price is heading.</p>
+      <div id="chips" class="chips" aria-label="Try a search"></div>
+      <ol class="how">
+        <li><span class="how-n">1</span><div><strong>Search stores</strong><p>Tavily scans Amazon, Walmart, Best Buy, Target, Costco and 20+ more.</p></div></li>
+        <li><span class="how-n">2</span><div><strong>Verify every price</strong><p>A ZooWork agent opens each store page and confirms price, condition and stock.</p></div></li>
+        <li><span class="how-n">3</span><div><strong>Buy now or wait?</strong><p>See 6 months of price history and a 30-day forecast before you buy.</p></div></li>
+      </ol>
     </section>
 
     <div id="banner" class="banner" hidden></div>
 
+    <!-- Progress -->
     <section id="progress" class="progress" hidden aria-live="polite">
-      <div class="progress-head"><span class="spinner" aria-hidden="true"></span><strong id="progressTitle">Finding the best price…</strong><span id="progressTime" class="progress-time">0s</span></div>
-      <ol id="progressList" class="progress-list"></ol>
-      <div id="storeList" class="store-list" aria-label="Store pages being checked"></div>
+      <div class="progress-head">
+        <span class="spinner" aria-hidden="true"></span>
+        <strong id="progressTitle">Finding the best price…</strong>
+        <span id="progressTime" class="progress-time">0s</span>
+        <button type="button" id="progressToggle" class="link-btn" aria-expanded="false">Details</button>
+      </div>
+      <ol id="stepper" class="stepper"></ol>
+      <p id="progressNow" class="progress-now"></p>
+      <div id="progressDetails" class="progress-details" hidden>
+        <ul id="progressLog" class="progress-log"></ul>
+      </div>
     </section>
 
-    <section id="results" class="results" aria-live="polite" hidden>
-      <div id="summary" class="summary"></div>
-      <div class="toolbar">
-        <p id="count" class="count"></p>
-        <div class="toolbar-right">
-          <label class="toggle"><input type="checkbox" id="newOnly"> <span>New only</span></label>
-          <label class="select">
-            <span class="visually-hidden">Sort</span>
-            <select id="sort">
-              <option value="price">Lowest price</option>
-              <option value="savings">Biggest discount</option>
-              <option value="relevance">Most relevant</option>
-            </select>
-          </label>
-        </div>
+    <!-- Results -->
+    <section id="results" class="results" hidden>
+      <div class="overview">
+        <article id="productCard" class="panel product"></article>
+        <article id="trendCard" class="panel trend">
+          <header class="panel-head">
+            <div>
+              <h2>Price history &amp; forecast</h2>
+              <p id="trendSub" class="panel-sub">Last 6 months and the next 30 days</p>
+            </div>
+            <div class="seg small" role="tablist" aria-label="Trend view">
+              <button type="button" role="tab" aria-selected="true" data-tview="chart">Chart</button>
+              <button type="button" role="tab" aria-selected="false" data-tview="table">Table</button>
+            </div>
+          </header>
+          <div id="trendBody" class="trend-body"></div>
+        </article>
       </div>
-      <div id="grid" class="grid"></div>
+
+      <section class="compare panel">
+        <header class="panel-head compare-head">
+          <div>
+            <h2 id="compareTitle">Compare stores</h2>
+            <p id="compareSub" class="panel-sub"></p>
+          </div>
+          <div class="compare-tools">
+            <label class="toggle"><input type="checkbox" id="newOnly"> <span>New only</span></label>
+            <label class="toggle"><input type="checkbox" id="verifiedOnly"> <span>Verified only</span></label>
+            <label class="select"><span class="visually-hidden">Sort</span>
+              <select id="sort">
+                <option value="price">Lowest price</option>
+                <option value="savings">Biggest discount</option>
+                <option value="relevance">Most relevant</option>
+              </select>
+            </label>
+            <div class="seg small" role="tablist" aria-label="Layout">
+              <button type="button" role="tab" aria-selected="true" data-view="list" title="List view">List</button>
+              <button type="button" role="tab" aria-selected="false" data-view="grid" title="Grid view">Grid</button>
+            </div>
+          </div>
+        </header>
+        <div id="offers" class="offers list"></div>
+      </section>
     </section>
 
     <section id="empty" class="empty" hidden></section>
   </main>
 
   <footer class="foot">
-    <p>Prices are read from live search results and can change or be out of date. Always confirm the final price, shipping and seller at the store.</p>
-    <p>Search by Tavily · price checks by a ZooWork agent that opens each store page.</p>
+    <p>Prices and forecasts can change quickly. Always confirm the final price, shipping and seller at the store. Forecasts are estimates, not guarantees.</p>
+    <p>Search by Tavily · price checks and price history by ZooWork agents.</p>
   </footer>
 
-  <template id="cardTpl">
-    <article class="card">
-      <a class="card-media" target="_blank" rel="noopener noreferrer">
-        <img alt="" loading="lazy" referrerpolicy="no-referrer">
-        <span class="ribbon" hidden>Best price</span>
-      </a>
-      <div class="card-body">
-        <div class="card-meta"><span class="store"></span><span class="tags"><span class="verify"></span><span class="cond"></span></span></div>
-        <h3 class="card-title"><a target="_blank" rel="noopener noreferrer"></a></h3>
-        <div class="price-row"><span class="price"></span><span class="was"></span><span class="off"></span></div>
-        <p class="note"></p>
-      </div>
-      <a class="card-cta" target="_blank" rel="noopener noreferrer">View at store <span aria-hidden="true">→</span></a>
-    </article>
-  </template>
-
+  <div id="tooltip" class="tooltip" role="status" hidden></div>
+  <script src="/chart.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

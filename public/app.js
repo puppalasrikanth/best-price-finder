@@ -3,52 +3,71 @@
   const form = $('#searchForm');
   const input = $('#q');
   const btn = $('#searchBtn');
-  const grid = $('#grid');
-  const results = $('#results');
-  const summaryEl = $('#summary');
-  const countEl = $('#count');
   const banner = $('#banner');
+  const results = $('#results');
   const empty = $('#empty');
-  const newOnly = $('#newOnly');
-  const sortSel = $('#sort');
   const chipsEl = $('#chips');
   const modePill = $('#modePill');
-  const tpl = $('#cardTpl');
-
-  const SUGGESTIONS = ['AirPods Pro 2', 'Nintendo Switch OLED', 'Dyson V15 Detect', 'Instant Pot Duo 6qt', 'Kindle Paperwhite', 'Samsung 65" QLED TV'];
-  const PLACEHOLDER = '<svg class="ph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm1 2v8.6l3.3-3.3a1 1 0 0 1 1.4 0l2.3 2.3 3.3-3.3a1 1 0 0 1 1.4 0L19 13.6V7H5Zm4 2.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/></svg>';
-  const COND = { new: 'New', used: 'Used', refurbished: 'Refurbished', 'open-box': 'Open box', mixed: 'New & refurb' };
-
-  let scope = 'stores';
-  let data = null;
-  let inflight = null;
+  const productCard = $('#productCard');
+  const trendBody = $('#trendBody');
+  const trendSub = $('#trendSub');
+  const offersEl = $('#offers');
+  const compareTitle = $('#compareTitle');
+  const compareSub = $('#compareSub');
+  const newOnly = $('#newOnly');
+  const verifiedOnly = $('#verifiedOnly');
+  const sortSel = $('#sort');
+  const tooltip = $('#tooltip');
   const progressEl = $('#progress');
-  const progressList = $('#progressList');
-  const storeList = $('#storeList');
+  const stepper = $('#stepper');
+  const progressNow = $('#progressNow');
   const progressTitle = $('#progressTitle');
   const progressTime = $('#progressTime');
+  const progressLog = $('#progressLog');
+  const progressDetails = $('#progressDetails');
+  const progressToggle = $('#progressToggle');
 
-  const money = (n) => (n == null ? '' : n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: n % 1 ? 2 : 0 }));
+  const SUGGESTIONS = ['AirPods Pro 2', 'Sony WH-1000XM5', 'Nintendo Switch 2', 'Dyson V15 Detect', 'Kindle Paperwhite', 'Instant Pot Duo 6qt'];
+  const PLACEHOLDER = '<svg class="ph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm1 2v8.6l3.3-3.3a1 1 0 0 1 1.4 0l2.3 2.3 3.3-3.3a1 1 0 0 1 1.4 0L19 13.6V7H5Zm4 2.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/></svg>';
+  const COND = { new: 'New', used: 'Used', refurbished: 'Refurbished', 'open-box': 'Open box', mixed: 'New & refurb' };
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const STEPS = [
+    { key: 'tavily', name: 'Search stores', sub: 'Tavily' },
+    { key: 'parser', name: 'Read prices', sub: 'From search results' },
+    { key: 'zoowork', name: 'Verify prices', sub: 'ZooWork agent' },
+    { key: 'trend', name: 'Price trend', sub: 'ZooWork agent' },
+  ];
+
+  let scope = 'stores';
+  let data = null; // search result
+  let searchError = null;
+  let trend = null; // { state: 'loading'|'done'|'error', data }
+  let view = 'list';
+  let tview = 'chart';
+  let streams = [];
+  let openStreams = 0;
+  let t0 = 0;
+  let timer = null;
+
+  const money = (n) => (n == null ? '—' : n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }));
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const discount = (o) => (o.wasPrice && o.price ? Math.round((1 - o.price / o.wasPrice) * 100) : 0);
+  const fmtDay = (iso) => { const d = new Date(`${iso}T12:00:00`); return `${MONTHS[d.getMonth()]} ${d.getDate()}`; };
+  const fmtMonth = (m) => `${MONTHS[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}`;
+  window.__ph = PLACEHOLDER;
+  const imgHtml = (src, alt) => (src ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.outerHTML=window.__ph">` : PLACEHOLDER);
 
-  // ---- recent searches (per-browser convenience only) ----
+  // ---------- recent searches (per-browser convenience) ----------
   const recent = {
     get() { try { return JSON.parse(localStorage.getItem('ps.recent') || '[]'); } catch { return []; } },
-    add(q) {
-      try {
-        const list = [q, ...this.get().filter((x) => x.toLowerCase() !== q.toLowerCase())].slice(0, 6);
-        localStorage.setItem('ps.recent', JSON.stringify(list));
-      } catch {}
-    },
+    add(q) { try { localStorage.setItem('ps.recent', JSON.stringify([q, ...this.get().filter((x) => x.toLowerCase() !== q.toLowerCase())].slice(0, 6))); } catch {} },
     remove(q) { try { localStorage.setItem('ps.recent', JSON.stringify(this.get().filter((x) => x !== q))); } catch {} },
   };
-
   function renderChips() {
     const r = recent.get();
     const items = r.length ? r : SUGGESTIONS;
-    chipsEl.innerHTML = (r.length ? '<span class="chip-label" style="font-size:13px;color:var(--muted);align-self:center">Recent:</span>' : '') +
-      items.map((q) => `<button type="button" class="chip" data-q="${esc(q)}">${esc(q)}${r.length ? '<span class="x" data-remove="' + esc(q) + '" aria-label="Remove">×</span>' : ''}</button>`).join('');
+    chipsEl.innerHTML = `<span class="chip-label">${r.length ? 'Recent:' : 'Try:'}</span>` + items.map((q) =>
+      `<button type="button" class="chip" data-q="${esc(q)}">${esc(q)}${r.length ? `<span class="x" data-remove="${esc(q)}" aria-label="Remove">×</span>` : ''}</button>`).join('');
   }
   chipsEl.addEventListener('click', (e) => {
     const rm = e.target.closest('[data-remove]');
@@ -57,241 +76,363 @@
     if (chip) { input.value = chip.dataset.q; search(chip.dataset.q); }
   });
 
-  document.querySelectorAll('.segmented button').forEach((b) => b.addEventListener('click', () => {
+  // ---------- controls ----------
+  document.querySelectorAll('.scope button').forEach((b) => b.addEventListener('click', () => {
     scope = b.dataset.scope;
-    document.querySelectorAll('.segmented button').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
-    if (input.value.trim().length >= 2 && data) search(input.value.trim());
+    document.querySelectorAll('.scope button').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
+    if (data && input.value.trim().length >= 2) search(input.value.trim());
   }));
-
+  document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => {
+    view = b.dataset.view;
+    document.querySelectorAll('[data-view]').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+    renderOffers();
+  }));
+  document.querySelectorAll('[data-tview]').forEach((b) => b.addEventListener('click', () => {
+    tview = b.dataset.tview;
+    document.querySelectorAll('[data-tview]').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+    renderTrend();
+  }));
   form.addEventListener('submit', (e) => { e.preventDefault(); const q = input.value.trim(); if (q.length >= 2) search(q); });
-  newOnly.addEventListener('change', renderGrid);
-  sortSel.addEventListener('change', renderGrid);
+  [newOnly, verifiedOnly, sortSel].forEach((c) => c.addEventListener('change', renderOffers));
+  progressToggle.addEventListener('click', () => {
+    const open = progressDetails.hidden;
+    progressDetails.hidden = !open;
+    progressToggle.setAttribute('aria-expanded', String(open));
+    progressToggle.textContent = open ? 'Hide details' : 'Details';
+  });
+  let resizeT;
+  window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(renderTrend, 120); });
 
   function showBanner(html, kind = '') { banner.className = 'banner ' + kind; banner.innerHTML = html; banner.hidden = false; }
-
-  function skeletons() {
-    results.hidden = false; empty.hidden = true;
-    summaryEl.innerHTML = '';
-    countEl.textContent = 'Searching stores…';
-    grid.innerHTML = Array.from({ length: 8 }, () => '<article class="card skeleton"><div class="card-media"></div><div class="line" style="width:40%"></div><div class="line"></div><div class="line" style="width:70%"></div><div class="line" style="width:35%;height:18px;margin-bottom:18px"></div></article>').join('');
-  }
-
-  // ---- progress panel ----
-  const SYSTEMS = {
-    cache: { name: 'Cache', icon: '⚡' },
-    tavily: { name: 'Tavily search', icon: '🔎' },
-    parser: { name: 'Price parser', icon: '🧮' },
-    zoowork: { name: 'ZooWork agent', icon: '🤖' },
-  };
-  let progressStart = 0;
-  let progressTimer = null;
-  const stores = new Map();
-
-  function resetProgress() {
-    progressEl.hidden = false;
-    progressEl.classList.remove('is-done');
-    progressList.innerHTML = '';
-    storeList.innerHTML = '';
-    stores.clear();
-    progressStart = Date.now();
-    clearInterval(progressTimer);
-    progressTimer = setInterval(() => { progressTime.textContent = `${Math.round((Date.now() - progressStart) / 1000)}s`; }, 500);
-    progressTitle.textContent = 'Finding the best price…';
-  }
-
-  function stepRow(system) {
-    let row = progressList.querySelector(`[data-system="${system}"]`);
-    if (!row) {
-      const meta = SYSTEMS[system] || { name: system, icon: '•' };
-      row = document.createElement('li');
-      row.dataset.system = system;
-      row.innerHTML = `<span class="st"></span><span class="sys">${esc(meta.name)}</span><span class="det"></span>`;
-      progressList.appendChild(row);
-    }
-    return row;
-  }
-
-  function onStep(ev) {
-    if (ev.system === 'store') {
-      let chip = stores.get(ev.detail);
-      if (!chip) {
-        chip = document.createElement('span');
-        chip.className = 'store-chip';
-        chip.textContent = ev.detail;
-        storeList.appendChild(chip);
-        stores.set(ev.detail, chip);
-      }
-      chip.dataset.status = ev.status;
-      return;
-    }
-    const row = stepRow(ev.system);
-    row.dataset.status = ev.status;
-    row.querySelector('.det').textContent = ev.detail || '';
-  }
-
-  function endProgress(ok) {
-    clearInterval(progressTimer);
-    progressEl.classList.add('is-done');
-    progressTitle.textContent = ok ? `Done in ${Math.round((Date.now() - progressStart) / 1000)}s` : 'Search stopped';
-    for (const chip of stores.values()) if (chip.dataset.status === 'running') chip.dataset.status = 'done';
-  }
-
-  function search(q) {
-    if (inflight) inflight.close();
-    document.body.classList.add('has-results');
-    btn.disabled = true; btn.textContent = 'Searching…';
-    banner.hidden = true;
-    data = null;
-    skeletons();
-    resetProgress();
-    const params = new URLSearchParams({ q, scope });
-    history.replaceState(null, '', '?' + params);
-    const es = new EventSource('/api/search?' + params);
-    inflight = es;
-    const done = (ok) => {
-      es.close();
-      if (inflight === es) inflight = null;
-      btn.disabled = false; btn.textContent = 'Compare prices';
-      endProgress(ok);
-    };
-    es.addEventListener('step', (e) => onStep(JSON.parse(e.data)));
-    es.addEventListener('preliminary', (e) => {
-      data = JSON.parse(e.data);
-      setMode(data.mode);
-      render();
-    });
-    es.addEventListener('final', (e) => {
-      data = JSON.parse(e.data);
-      recent.add(q);
-      setMode(data.mode);
-      if (data.mode === 'demo') {
-        showBanner(`<strong>Demo mode.</strong> Showing sample results for “${esc(data.demoQuery)}”. Add your Tavily key to <code>.env</code> as <code>TAVILY_API_KEY=tvly-…</code> and restart the server to search live.`);
-      } else if (data.verification === 'failed') {
-        showBanner(`<strong>Prices not verified.</strong> ZooWork couldn’t check the store pages (${esc(data.verificationError || 'unknown error')}). Showing prices from search snippets — confirm at the store.`);
-      }
-      render();
-      done(true);
-    });
-    es.addEventListener('error', (e) => {
-      if (e.data) {
-        const msg = JSON.parse(e.data).error;
-        if (!data) results.hidden = true;
-        showBanner(esc(msg), 'error');
-        done(false);
-      } else if (es.readyState === EventSource.CLOSED || !data || data.verification === 'pending') {
-        if (inflight === es) {
-          showBanner('Lost connection to the server. Is it still running?', 'error');
-          done(false);
-        }
-      }
-    });
-  }
-
   function setMode(mode) {
     modePill.hidden = false;
     modePill.textContent = mode === 'live' ? 'Live prices' : 'Demo mode';
     modePill.className = 'pill' + (mode === 'live' ? '' : ' demo');
   }
 
-  function imgHtml(src, alt) {
-    return src ? `<img src="${esc(src)}" alt="${esc(alt)}" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{innerHTML:${esc(JSON.stringify(PLACEHOLDER))}}))">` : PLACEHOLDER;
+  // ---------- progress ----------
+  const sites = new Map();
+  function resetProgress() {
+    progressEl.hidden = false;
+    progressEl.classList.remove('is-done');
+    progressTitle.textContent = 'Finding the best price…';
+    stepper.innerHTML = STEPS.map((s) => `<li data-step="${s.key}" data-status="pending"><span class="ic"></span><span class="txt"><span class="nm">${s.name}</span><span class="dt">${s.sub}</span></span></li>`).join('');
+    progressNow.innerHTML = '';
+    progressLog.innerHTML = '';
+    sites.clear();
+    t0 = Date.now();
+    clearInterval(timer);
+    progressTime.textContent = '0s';
+    timer = setInterval(() => { progressTime.textContent = `${Math.round((Date.now() - t0) / 1000)}s`; }, 500);
   }
-
-  function render() {
-    const { offers, summary } = data;
-    if (!offers.length) {
-      results.hidden = true; empty.hidden = false;
-      empty.innerHTML = `<h2>No offers found for “${esc(data.query)}”</h2><p>Try a more specific name or model number${scope === 'stores' ? ', or switch to <strong>Whole web</strong>' : ''}.</p>`;
+  function log(sys, status, detail) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="t">${Math.round((Date.now() - t0) / 1000)}s</span><span class="s">${esc(sys)}</span>${esc(status)} · ${esc(detail)}`;
+    progressLog.appendChild(li);
+    progressDetails.scrollTop = progressDetails.scrollHeight;
+  }
+  function onStep(ev) {
+    if (ev.system === 'store' || ev.system === 'trend-source') {
+      const key = `${ev.system}:${ev.detail}`;
+      let chip = sites.get(key);
+      if (!chip) {
+        chip = document.createElement('span');
+        chip.className = 'site';
+        chip.textContent = (ev.system === 'trend-source' ? '📈 ' : '') + ev.detail;
+        chip.title = ev.system === 'trend-source' ? 'Price-history source' : 'Store page being verified';
+        progressNow.appendChild(chip);
+        sites.set(key, chip);
+      }
+      chip.dataset.status = ev.status;
+      log(ev.system === 'store' ? 'verify' : 'trend', ev.status, ev.detail);
       return;
     }
-    results.hidden = false; empty.hidden = true;
+    const sysKey = ev.system === 'cache' ? 'tavily' : ev.system;
+    const li = stepper.querySelector(`[data-step="${sysKey}"]`);
+    if (li) {
+      li.dataset.status = ev.status;
+      li.querySelector('.dt').textContent = ev.detail || '';
+      li.title = ev.detail || '';
+    }
+    if (ev.system === 'cache') {
+      for (const k of ['parser', 'zoowork']) {
+        const s = stepper.querySelector(`[data-step="${k}"]`);
+        if (s && s.dataset.status === 'pending') { s.dataset.status = 'done'; s.querySelector('.dt').textContent = 'From cache'; }
+      }
+    }
+    log(ev.system, ev.status, ev.detail);
+  }
+  function streamDone() {
+    openStreams -= 1;
+    if (openStreams > 0) return;
+    clearInterval(timer);
+    progressEl.classList.add('is-done');
+    btn.disabled = false; btn.textContent = 'Compare';
+    progressTitle.textContent = `Done in ${Math.round((Date.now() - t0) / 1000)}s`;
+    for (const li of stepper.querySelectorAll('[data-status="pending"],[data-status="running"]')) li.dataset.status = 'skipped';
+    for (const chip of sites.values()) if (chip.dataset.status === 'running') chip.dataset.status = 'done';
+  }
 
-    const b = summary.bestNew || summary.bestAny;
-    const bestHtml = b ? `
-      <div class="best">
-        <a class="best-img" href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">${imgHtml(b.image, b.title)}</a>
+  // ---------- search ----------
+  function closeStreams() { streams.forEach((s) => s.close()); streams = []; openStreams = 0; }
+
+  function search(q) {
+    closeStreams();
+    document.body.classList.add('has-results');
+    btn.disabled = true; btn.textContent = 'Searching…';
+    banner.hidden = true;
+    empty.hidden = true;
+    data = null;
+    searchError = null;
+    trend = { state: 'loading' };
+    results.hidden = false;
+    resetProgress();
+    renderAll();
+    const params = new URLSearchParams({ q, scope });
+    history.replaceState(null, '', '?' + params);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // 1) store prices (Tavily → parser → ZooWork verification)
+    const es = new EventSource('/api/search?' + params);
+    streams.push(es); openStreams += 1;
+    let finished = false;
+    const finish = () => { if (finished) return; finished = true; es.close(); streamDone(); };
+    es.addEventListener('step', (e) => onStep(JSON.parse(e.data)));
+    es.addEventListener('preliminary', (e) => { data = JSON.parse(e.data); setMode(data.mode); renderAll(); });
+    es.addEventListener('final', (e) => {
+      data = JSON.parse(e.data);
+      recent.add(q);
+      setMode(data.mode);
+      if (data.mode === 'demo') {
+        showBanner(`<strong>Demo mode.</strong> Showing sample results for “${esc(data.demoQuery)}”. Add <code>TAVILY_API_KEY</code> and <code>ZOOWORK_API_KEY</code> to <code>.env</code> and restart to search live.`);
+      } else if (data.verification === 'failed') {
+        showBanner(`<strong>Prices not verified.</strong> ZooWork couldn’t check the store pages (${esc(data.verificationError || 'unknown error')}). Showing prices from search results — confirm at the store.`);
+      }
+      renderAll();
+      finish();
+    });
+    es.addEventListener('error', (e) => {
+      if (finished) return;
+      searchError = e.data ? JSON.parse(e.data).error : 'Lost connection to the server. Is it still running?';
+      showBanner(`<strong>Store search failed.</strong> ${esc(searchError)}`, 'error');
+      renderAll();
+      finish();
+    });
+
+    // 2) price trend (runs in parallel on its own ZooWork agent)
+    const ts = new EventSource('/api/trend?' + new URLSearchParams({ q }));
+    streams.push(ts); openStreams += 1;
+    let tFinished = false;
+    const tFinish = () => { if (tFinished) return; tFinished = true; ts.close(); streamDone(); };
+    ts.addEventListener('step', (e) => onStep(JSON.parse(e.data)));
+    ts.addEventListener('final', (e) => {
+      const d = JSON.parse(e.data);
+      trend = d.trend && d.trend.ok ? { state: 'done', data: d.trend, demo: d.demo } : { state: 'error', reason: (d.trend && d.trend.reason) || 'No price history found' };
+      renderAll();
+      tFinish();
+    });
+    ts.addEventListener('error', (e) => {
+      if (tFinished) return;
+      trend = { state: 'error', reason: e.data ? JSON.parse(e.data).error : 'Lost connection while loading the price trend' };
+      renderAll();
+      tFinish();
+    });
+  }
+
+  // ---------- buy-or-wait verdict ----------
+  function bestOffer() {
+    if (!data) return null;
+    return data.summary.bestNew || data.summary.bestAny || null;
+  }
+  function verdict() {
+    const b = bestOffer();
+    const t = trend && trend.state === 'done' ? trend.data : null;
+    if (!data && searchError) return { kind: 'neutral', title: 'Store prices unavailable', text: 'The store search failed — try again in a moment.' };
+    if (!data) return { kind: 'pending', title: 'Checking prices…', text: 'Comparing stores and looking up the price history.' };
+    if (!b) return { kind: 'neutral', title: 'No confirmed price yet', text: 'Open the stores below to check their current price.' };
+    const verifying = data.verification === 'pending';
+    if (!t) {
+      if (trend && trend.state === 'loading') return { kind: 'pending', title: verifying ? 'Verifying prices…' : 'Analyzing the price trend…', text: 'Buy-or-wait advice appears when the price history is ready.' };
+      const others = data.offers.filter((o) => o.price != null && o !== b && !o.suspect);
+      const med = others.length ? others.map((o) => o.price).sort((a, c) => a - c)[Math.floor(others.length / 2)] : null;
+      return med && med > b.price
+        ? { kind: 'good', title: 'Lowest price we found', text: `${money(med - b.price)} less than the typical store price (${money(med)}).` }
+        : { kind: 'neutral', title: 'Best available price', text: 'Price history isn’t available for this product.' };
+    }
+    if (verifying) return { kind: 'pending', title: 'Verifying prices…', text: 'Price history is ready — buy-or-wait advice appears once store prices are confirmed.' };
+    const p = b.price;
+    const { low6, avg6 } = t.stats;
+    const fc = t.projection;
+    const sale = t.events && t.events[0];
+    if (p <= low6 * 1.03) return { kind: 'good', title: 'Great time to buy', text: `At or below the 6-month low of ${money(low6)}${p < avg6 ? ` — ${Math.round((1 - p / avg6) * 100)}% under the 6-month average` : ''}.` };
+    if (fc.mid < p * 0.95) return { kind: 'warn', title: 'Consider waiting', text: `Expected around ${money(fc.mid)} by ${fmtDay(fc.date)}${sale ? ` (${sale.name} starts ${fmtDay(sale.start)})` : ''} — about ${Math.round((1 - fc.mid / p) * 100)}% less than today.` };
+    if (p <= avg6) return { kind: 'good', title: 'Good price', text: `${Math.round((1 - p / avg6) * 100)}% below the 6-month average of ${money(avg6)}. No big drop expected in the next 30 days.` };
+    return { kind: 'warn', title: 'Above the usual price', text: `It has typically sold for ${money(avg6)} over the last 6 months (low ${money(low6)}).` };
+  }
+
+  // ---------- render ----------
+  function renderAll() {
+    const searchDone = data && data.verification !== 'pending';
+    if (searchDone && !data.offers.length) {
+      results.hidden = true;
+      empty.hidden = false;
+      empty.innerHTML = `<h2>No offers found for “${esc(data.query)}”</h2><p>Try a more specific name or model number${scope === 'stores' ? ', or switch the search to <strong>Web</strong>' : ''}.</p>`;
+      return;
+    }
+    results.hidden = false;
+    renderProduct();
+    renderTrend();
+    renderOffers();
+  }
+
+  function renderProduct() {
+    const b = bestOffer();
+    const t = trend && trend.state === 'done' ? trend.data : null;
+    const v = verdict();
+    const name = (t && t.product) || (b && b.title) || (data && (data.demoQuery || data.query)) || input.value;
+    const verified = data && data.verification === 'verified';
+    const eyebrow = !data ? (searchError ? 'Store search failed' : 'Searching…') : b ? (verified ? 'Best verified price' : data.verification === 'pending' ? 'Best price · verifying…' : 'Best price found') : 'No price yet';
+    const vIcon = v.kind === 'good' ? '✓' : v.kind === 'warn' ? '!' : v.kind === 'pending' ? '' : 'i';
+    const fact = (l, val, s) => `<div class="fact"><span class="l">${l}</span><span class="v">${val}</span>${s ? `<span class="s">${s}</span>` : ''}</div>`;
+    const pend = trend && trend.state === 'loading' ? '…' : '—';
+    productCard.innerHTML = `
+      <div class="product-top">
+        <div class="product-img">${b ? imgHtml(b.image, name) : PLACEHOLDER}</div>
         <div>
-          <p class="eyebrow">${summary.bestNew ? (data.verification === 'verified' ? 'Best verified new price' : 'Best new price') : 'Lowest price found'}${data.verification === 'pending' ? ' · verifying…' : ''}</p>
-          <p class="best-price">${money(b.price)}</p>
-          <p class="best-title">at <span class="best-store">${esc(b.store)}</span> · ${esc(b.title)}</p>
-          <a class="btn" href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">Go to ${esc(b.store)} <span aria-hidden="true">→</span></a>
+          <p class="product-name" title="${esc(name)}">${esc(name)}</p>
+          <p class="eyebrow">${eyebrow}</p>
+          <p class="hero-price">${b ? money(b.price) : '—'}</p>
+          ${b ? `<p class="hero-store">at <strong>${esc(b.store)}</strong> · ${esc(COND[b.condition] || 'New')}${b.wasPrice ? `<span class="hero-was">${money(b.wasPrice)}</span>` : ''}</p>` : ''}
         </div>
-      </div>` : `<div class="best"><div></div><div><p class="eyebrow">No clear price</p><p class="best-title">We found products but couldn’t read a reliable price. Check the stores below.</p></div></div>`;
-
-    const spread = summary.low != null && summary.high != null && summary.high > summary.low ? summary.high - summary.low : null;
-    summaryEl.innerHTML = bestHtml + `
-      <div class="stats">
-        <div class="stat"><p class="stat-label">Price range</p><p class="stat-value">${summary.low != null ? money(summary.low) + (spread ? '–' + money(summary.high) : '') : '—'}</p>${spread ? `<p class="stat-sub">${money(spread)} difference across stores</p>` : ''}</div>
-        <div class="stat"><p class="stat-label">Stores compared</p><p class="stat-value">${summary.stores}</p><p class="stat-sub">${summary.pricedCount} with a price</p></div>
-        <div class="stat"><p class="stat-label">Lowest any condition</p><p class="stat-value">${summary.bestAny ? money(summary.bestAny.price) : (b ? money(b.price) : '—')}</p>${summary.bestAny ? `<p class="stat-sub">${esc(COND[summary.bestAny.condition] || '')} · ${esc(summary.bestAny.store)}</p>` : ''}</div>
-        <div class="stat"><p class="stat-label">Price check</p><p class="stat-value">${verificationLabel()}</p><p class="stat-sub">${data.cached ? 'Cached · ' : ''}${new Date(data.fetchedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</p></div>
+      </div>
+      <div class="verdict" data-kind="${v.kind}"><span class="vi">${vIcon}</span><div><strong>${esc(v.title)}</strong><p>${esc(v.text)}</p></div></div>
+      <div class="facts">
+        ${fact('6-month low', t ? money(t.stats.low6) : pend, t && t.stats.lowMonth ? fmtMonth(t.stats.lowMonth) : '')}
+        ${fact('6-month average', t ? money(t.stats.avg6) : pend, '')}
+        ${fact(`Forecast${t ? ` · ${fmtDay(t.projection.date)}` : ''}`, t ? `~${money(t.projection.mid)}` : pend, t ? `${t.projection.changePct > 0 ? '+' : ''}${t.projection.changePct}% vs typical` : '')}
+      </div>
+      <div class="cta-row">
+        ${b ? `<a class="btn" href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">Buy at ${esc(b.store)} <span aria-hidden="true">→</span></a>` : ''}
+        ${data && data.offers.length > 1 ? `<a class="btn ghost" href="#offers">Compare ${data.offers.length} offers</a>` : ''}
       </div>`;
-    renderGrid();
   }
 
-  function verificationLabel() {
-    const v = data.verification;
-    if (v === 'verified') return `✓ ${data.summary.verifiedCount} verified`;
-    if (v === 'pending') return 'Verifying…';
-    if (v === 'failed') return 'Unverified';
-    return data.mode === 'demo' ? 'Demo' : 'Snippets only';
+  function renderTrend() {
+    if (!trend) return;
+    if (trend.state === 'loading') {
+      trendSub.textContent = 'A ZooWork agent is researching 6 months of price history…';
+      trendBody.innerHTML = '<div class="skel-chart" aria-hidden="true"></div><p class="trend-foot">This usually takes 1–3 minutes. Store prices update as they’re verified.</p>';
+      return;
+    }
+    if (trend.state === 'error') {
+      trendSub.textContent = 'Last 6 months and the next 30 days';
+      trendBody.innerHTML = `<div class="trend-empty"><div><strong>Price trend unavailable</strong><br>${esc(trend.reason)}</div></div>`;
+      return;
+    }
+    const t = trend.data;
+    const b = bestOffer();
+    trendSub.textContent = `${fmtMonth(t.history[0].month)} – today, forecast to ${fmtDay(t.projection.date)} · ${t.confidence} confidence${trend.demo ? ' · sample data' : ''}`;
+    const stat = (l, v, s) => `<div class="fact"><span class="l">${l}</span><span class="v">${v}</span>${s ? `<span class="s">${s}</span>` : ''}</div>`;
+    const events = (t.events || []).map((e) => `<span class="event">🏷 ${esc(e.name)} · ${fmtDay(e.start)} · ~${e.discount}% off typical</span>`).join('');
+    const sources = (t.sources || []).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.name)}</a>`).join(', ');
+
+    if (tview === 'table') {
+      const rows = t.history.map((h) => `<tr><td>${fmtMonth(h.month)}</td><td class="r">${money(h.typical)}</td><td class="r">${money(h.low)}</td><td>${esc(h.source || '—')}</td></tr>`).join('');
+      trendBody.innerHTML = `<table class="tbl"><thead><tr><th>Month</th><th class="r">Typical</th><th class="r">Lowest</th><th>Source</th></tr></thead><tbody>${rows}
+        <tr><td>Today</td><td class="r">${money(t.current.price)}</td><td class="r">${b ? `${money(b.price)} (best verified)` : '—'}</td><td>${t.current.from === 'agent' ? 'ZooWork agent' : 'Recent months'}</td></tr>
+        <tr class="fc"><td>Forecast ${fmtDay(t.projection.date)}</td><td class="r">~${money(t.projection.mid)}</td><td class="r">${money(t.projection.low)} – ${money(t.projection.high)}</td><td>Projection</td></tr></tbody></table>
+        ${events ? `<div class="event-row">${events}</div>` : ''}
+        <p class="trend-foot"><strong>How the forecast works:</strong> ${esc(t.projection.method)}${t.note ? ` ${esc(t.note)}` : ''}${sources ? `<br>Sources: ${sources}` : ''}</p>`;
+      return;
+    }
+
+    trendBody.innerHTML = `
+      <div class="legend">
+        <span><i class="key-line"></i>Typical price</span>
+        <span><i class="key-dot"></i>Lowest that month</span>
+        <span><i class="key-dash"></i><i class="key-band"></i>30-day forecast &amp; range</span>
+        ${b ? '<span><i class="key-best"></i>Best verified today</span>' : ''}
+      </div>
+      <div class="chart" id="chart"></div>
+      <div class="trend-stats">
+        ${stat('Typical now', money(t.current.price), t.msrp ? `MSRP ${money(t.msrp)}` : '')}
+        ${stat('6-month range', `${money(t.stats.low6)}–${money(t.stats.high6)}`, '')}
+        ${stat(`Forecast ${fmtDay(t.projection.date)}`, `~${money(t.projection.mid)}`, `${money(t.projection.low)} – ${money(t.projection.high)}`)}
+        ${stat('Best today vs typical', b ? `${b.price <= t.current.price ? '−' : '+'}${Math.abs(Math.round((b.price / t.current.price - 1) * 100))}%` : '—', b ? `${money(b.price)} at ${esc(b.store)}` : '')}
+      </div>
+      ${events ? `<div class="event-row">${events}</div>` : ''}
+      <p class="trend-foot">Forecast: ${esc(t.projection.method)}${sources ? ` Sources: ${sources}.` : ''}</p>`;
+    window.TrendChart.render(document.getElementById('chart'), t, { bestToday: b ? { price: b.price } : null, tooltip });
   }
 
-  function renderGrid() {
-    if (!data) return;
+  function renderOffers() {
+    if (!data && searchError) {
+      compareTitle.textContent = 'Compare stores';
+      compareSub.textContent = 'Store search failed';
+      offersEl.className = 'offers list';
+      offersEl.innerHTML = `<div class="trend-empty"><div><strong>Couldn’t load store prices</strong><br>${esc(searchError)}<br><button type="button" class="btn ghost" style="margin-top:10px" onclick="document.getElementById('searchBtn').click()">Try again</button></div></div>`;
+      return;
+    }
+    if (!data) {
+      compareTitle.textContent = 'Compare stores';
+      compareSub.textContent = 'Searching major US stores…';
+      offersEl.className = 'offers list';
+      offersEl.innerHTML = Array.from({ length: 5 }, () => '<div class="skeleton-row"></div>').join('');
+      return;
+    }
+    const verifiedMode = data.verification === 'verified';
+    const ok = (o) => o.price != null && !o.suspect && !o.stale && o.inStock !== false && (!verifiedMode || o.verified === true);
     let list = data.offers.slice();
     if (newOnly.checked) list = list.filter((o) => o.condition === 'new');
-    const ok = (o) => o.price != null && !o.suspect && !o.stale && o.inStock !== false && (data.verification !== 'verified' || o.verified === true);
+    if (verifiedOnly.checked) list = list.filter((o) => o.verified === true);
     if (sortSel.value === 'savings') list.sort((a, b) => discount(b) - discount(a) || (a.price ?? 1e9) - (b.price ?? 1e9));
     else if (sortSel.value === 'relevance') list.sort((a, b) => b.score - a.score);
     else list.sort((a, b) => (ok(b) - ok(a)) || ((a.price ?? 1e9) - (b.price ?? 1e9)));
 
-    countEl.innerHTML = `<strong>${list.length}</strong> offer${list.length === 1 ? '' : 's'} for “${esc(data.demoQuery || data.query)}”`;
-    grid.innerHTML = '';
-    for (const o of list) {
-      const node = tpl.content.firstElementChild.cloneNode(true);
-      node.querySelectorAll('a').forEach((a) => (a.href = o.url));
-      const media = node.querySelector('.card-media');
-      media.innerHTML = imgHtml(o.image, o.title) + (o.isBest ? '<span class="ribbon">Best price</span>' : '');
-      node.querySelector('.store').textContent = o.store;
-      node.querySelector('.cond').textContent = o.condition ? COND[o.condition] || '' : '';
-      node.querySelector('.card-title a').textContent = o.title;
-      node.querySelector('.card-title a').title = o.title;
-      const price = node.querySelector('.price');
-      if (o.price != null) {
-        price.textContent = (o.listing ? 'from ' : '') + money(o.price) + (o.priceHigh && o.priceHigh > o.price ? ' – ' + money(o.priceHigh) : '');
-      } else {
-        price.textContent = 'See price at store';
-        price.classList.add('none');
-      }
-      if (o.wasPrice) {
-        node.querySelector('.was').textContent = money(o.wasPrice);
-        node.querySelector('.off').textContent = `-${discount(o)}%`;
-      }
+    const best = bestOffer();
+    const stores = new Set(data.offers.map((o) => o.store)).size;
+    compareTitle.textContent = `Compare ${stores} store${stores === 1 ? '' : 's'}`;
+    compareSub.textContent = verifiedMode
+      ? `${data.summary.verifiedCount} prices confirmed on the store page by ZooWork`
+      : data.verification === 'pending' ? 'Prices from search results — ZooWork is confirming them now' : 'Prices from search results — confirm at the store';
+    offersEl.className = `offers ${view}`;
+    if (!list.length) { offersEl.innerHTML = '<p class="panel-sub" style="padding:12px 6px">No offers match these filters.</p>'; return; }
+
+    offersEl.innerHTML = list.map((o) => {
+      const tags = [];
+      if (o.isBest) tags.push('<span class="tag best">Best price</span>');
+      if (verifiedMode) tags.push(o.verified ? '<span class="tag ok">✓ Verified</span>' : `<span class="tag">${o.checked ? 'Not confirmed' : 'Not checked'}</span>`);
+      else if (data.verification === 'pending') tags.push('<span class="tag pending">Checking…</span>');
+      if (o.condition) tags.push(`<span class="tag">${esc(COND[o.condition] || o.condition)}</span>`);
+      if (o.inStock === false) tags.push('<span class="tag">Out of stock</span>');
       const notes = [];
-      const badge = node.querySelector('.verify');
-      if (data.verification === 'verified') {
-        if (o.verified) { badge.textContent = '✓ Verified'; badge.dataset.kind = 'ok'; }
-        else { badge.textContent = o.checked ? 'Not confirmed' : 'Not checked'; badge.dataset.kind = 'no'; }
-      } else if (data.verification === 'pending') { badge.textContent = 'Checking…'; badge.dataset.kind = 'pending'; }
-      else badge.remove();
-      if (o.verified && o.snippetPrice != null && Math.abs(o.snippetPrice - o.price) >= 0.01) notes.push(`Search snippet said ${money(o.snippetPrice)}`);
-      if (o.inStock === false) notes.push('Out of stock');
-      if (data.verification === 'verified' && !o.verified && o.note) notes.push(o.note);
-      if (o.stale) notes.push(`Price as of ${new Date(o.asOf + 'T00:00').toLocaleDateString([], { month: 'short', year: 'numeric' })} — may be outdated`);
+      if (o.verified && o.snippetPrice != null && Math.abs(o.snippetPrice - o.price) >= 0.01) notes.push(`Search result said ${money(o.snippetPrice)}`);
+      if (verifiedMode && !o.verified && o.note) notes.push(o.note);
+      if (o.stale) notes.push(`Price from ${new Date(o.asOf + 'T12:00').toLocaleDateString([], { month: 'short', year: 'numeric' })} — may be outdated`);
       else if (o.suspect) notes.push('Unusual price — may be an accessory or a different item');
-      node.querySelector('.note').textContent = notes.join(' · ');
-      if (o.isBest) node.classList.add('is-best');
-      if (o.suspect || o.stale || o.inStock === false || (data.verification === 'verified' && !o.verified)) node.classList.add('is-muted');
-      grid.appendChild(node);
-    }
+      const priceTxt = o.price != null ? (o.listing ? 'from ' : '') + money(o.price) : 'See price';
+      const delta = best && o.price != null && o !== best && ok(o) && o.price > best.price ? `+${money(o.price - best.price)} vs best` : '';
+      const muted = !ok(o) && o.price != null;
+      return `<a class="row${o.isBest ? ' is-best' : ''}${muted ? ' is-muted' : ''}" href="${esc(o.url)}" target="_blank" rel="noopener noreferrer">
+        <span class="thumb">${imgHtml(o.image, o.title)}</span>
+        <span class="row-main">
+          <span class="row-top"><span class="store">${esc(o.store)}</span>${tags.join('')}</span>
+          <p class="row-title" title="${esc(o.title)}">${esc(o.title)}</p>
+          <p class="row-note">${esc(notes.join(' · '))}</p>
+        </span>
+        <span class="row-price"><span class="p${o.price == null ? ' none' : ''}">${priceTxt}</span>
+          ${o.wasPrice ? `<span class="w"><s>${money(o.wasPrice)}</s><span class="off">−${discount(o)}%</span></span>` : ''}
+          ${delta ? `<span class="delta">${delta}</span>` : ''}</span>
+        <span class="row-cta">View <span aria-hidden="true">→</span></span>
+      </a>`;
+    }).join('');
   }
 
-  // Boot
+  // ---------- boot ----------
   renderChips();
   fetch('/api/health').then((r) => r.json()).then((h) => setMode(h.mode)).catch(() => {});
   const params = new URLSearchParams(location.search);
-  if (params.get('scope') === 'web') document.querySelector('[data-scope="web"]').click();
+  if (params.get('scope') === 'web') document.querySelector('.scope [data-scope="web"]').click();
   if (params.get('q')) { input.value = params.get('q'); search(params.get('q')); }
   else input.focus();
 })();

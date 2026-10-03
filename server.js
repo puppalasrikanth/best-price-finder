@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { runSearch } = require('./lib/pipeline');
+const { fetchTrend, analyzeTrend } = require('./lib/trend');
 const { buildOffers } = require('./lib/extract');
 
 // --- tiny .env loader ---------------------------------------------------------
@@ -27,6 +28,10 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const DEMO = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'demo.json'), 'utf8'));
 
 const cache = new Map(); // key -> { at, data }
+const trendCache = new Map(); // query -> { at, raw }
+const trendInflight = new Map(); // query -> Promise<raw>
+const TREND_CACHE_HOURS = Number(process.env.TREND_CACHE_HOURS) || 12;
+const DEMO_TREND = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'trend-demo.json'), 'utf8'));
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -108,6 +113,73 @@ async function handleSearch(req, res, url) {
   finish();
 }
 
+function openStream(req, res) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  let closed = false;
+  req.on('close', () => { closed = true; });
+  const ping = setInterval(() => { if (!closed) res.write(': ping\n\n'); }, 15000);
+  return {
+    send: (type, data) => { if (!closed) res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); },
+    end: () => { clearInterval(ping); if (!closed) res.end(); },
+  };
+}
+
+// 6-month price history (ZooWork agent) + 30-day projection, streamed as SSE.
+async function handleTrend(req, res, url) {
+  const q = (url.searchParams.get('q') || '').trim().replace(/\s+/g, ' ');
+  const price = Number(url.searchParams.get('price')) || null;
+  const { send, end } = openStream(req, res);
+  const step = (status, detail) => send('step', { system: 'trend', status, detail });
+  if (q.length < 2 || q.length > 120) { send('error', { error: 'Enter a product name.' }); return end(); }
+
+  if (!LIVE) {
+    step('done', 'Demo mode — sample price history');
+    send('final', { query: q, demo: true, trend: analyzeTrend(DEMO_TREND, { currentPrice: price }) });
+    return end();
+  }
+  if (!ZOOWORK_KEY) {
+    step('skipped', 'Add ZOOWORK_API_KEY to .env to see price trends');
+    send('final', { query: q, trend: { ok: false, reason: 'Price trends need a ZooWork API key.' } });
+    return end();
+  }
+
+  const key = q.toLowerCase();
+  const hit = trendCache.get(key);
+  try {
+    let raw;
+    if (hit && Date.now() - hit.at < TREND_CACHE_HOURS * 3600_000) {
+      step('done', `Using price history gathered ${Math.max(1, Math.round((Date.now() - hit.at) / 60000))} min ago`);
+      raw = hit.raw;
+    } else {
+      const t0 = Date.now();
+      let p = trendInflight.get(key);
+      if (!p) {
+        p = fetchTrend({
+          apiKey: ZOOWORK_KEY, query: q,
+          timeoutMs: Number(process.env.ZOOWORK_TREND_TIMEOUT_MS) || 300000,
+          emit: (status, detail) => { console.log(`  [trend] ${status}: ${detail}`); step(status, detail); },
+          onUrl: (host, status) => send('step', { system: 'trend-source', status, detail: host }),
+        });
+        trendInflight.set(key, p);
+        p.finally(() => trendInflight.delete(key)).catch(() => {});
+      } else {
+        step('running', 'Joining a price-history lookup already in progress…');
+      }
+      raw = await p;
+      trendCache.set(key, { at: Date.now(), raw });
+      step('done', `Price history gathered in ${Math.round((Date.now() - t0) / 1000)}s`);
+    }
+    const trend = analyzeTrend(raw, { currentPrice: price });
+    if (!trend.ok) trendCache.delete(key);
+    send('final', { query: q, trend });
+  } catch (err) {
+    console.error(`[trend] "${q}" failed:`, err.message);
+    step('error', err.message);
+    send('final', { query: q, trend: { ok: false, reason: err.message } });
+  }
+  end();
+}
+
 function serveStatic(req, res, url) {
   let rel = decodeURIComponent(url.pathname);
   if (rel === '/') rel = '/index.html';
@@ -133,6 +205,7 @@ const server = http.createServer((req, res) => {
     return res.end();
   }
   if (url.pathname === '/api/search') return void handleSearch(req, res, url);
+  if (url.pathname === '/api/trend') return void handleTrend(req, res, url);
   if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true, mode: LIVE ? 'live' : 'demo', depth: DEPTH, verification: ZOOWORK_KEY ? 'zoowork' : 'off' });
   serveStatic(req, res, url);
 });
