@@ -11,23 +11,28 @@ function fakeMossBackend() {
     if ('$eq' in f.condition) return v === f.condition.$eq;
     return true;
   };
+  const opts = { failLoad: false, cloudStripsMetadata: false };
   class FakeClient {
     constructor(id, key) { this.id = id; this.key = key; }
+    async getDocs(name, o = {}) { calls.push(['getDocs', name, o]); const ix = indexes.get(name); return o.docIds ? o.docIds.map((id) => ix.get(id)).filter(Boolean) : [...ix.values()]; }
     async getIndex(name) { calls.push(['getIndex', name]); if (!indexes.has(name)) throw new Error('Index not found'); return { name, docCount: indexes.get(name).size }; }
     async createIndex(name, docs) { calls.push(['createIndex', name]); indexes.set(name, new Map(docs.map((d) => [d.id, d]))); return { indexName: name, docCount: docs.length }; }
-    async loadIndex(name, opts) { calls.push(['loadIndex', name, opts]); if (!indexes.has(name)) throw new Error('Index not found'); return name; }
+    async loadIndex(name, o) { calls.push(['loadIndex', name, o]); if (opts.failLoad) throw new Error("Model load error: failed to load embedding model 'moss-minilm': 401 Unauthorized"); if (!indexes.has(name)) throw new Error('Index not found'); this.loaded = true; return name; }
     async addDocs(name, docs, opts) { calls.push(['addDocs', name, docs.length, opts]); const ix = indexes.get(name); for (const d of docs) ix.set(d.id, d); return { jobId: 'j1' }; }
-    async query(name, text, opts = {}) {
-      calls.push(['query', name, text, opts]);
+    async query(name, text, opts2 = {}) {
+      calls.push(['query', name, text, opts2]);
       const q = words(text);
-      const docs = [...indexes.get(name).values()].filter((d) => matchFilter(d, opts.filter)).map((d) => {
+      const useFilter = this.loaded ? opts2.filter : undefined; // cloud query ignores filters
+      const docs = [...indexes.get(name).values()].filter((d) => matchFilter(d, useFilter)).map((d) => {
         const w = words(d.text);
         const inter = [...q].filter((x) => w.has(x)).length;
-        return { ...d, score: inter / Math.max(1, q.size) }; // share of query words found
-      }).sort((a, b) => b.score - a.score).slice(0, opts.topK || 5);
+        const out = { ...d, score: inter / Math.max(1, q.size) }; // share of query words found
+        if (!this.loaded && opts.cloudStripsMetadata) delete out.metadata;
+        return out;
+      }).sort((a, b) => b.score - a.score).slice(0, opts2.topK || 5);
       return { docs, query: text, indexName: name, timeTakenInMs: 1 };
     }
   }
-  return { factory: async (id, key) => new FakeClient(id, key), calls, indexes };
+  return { factory: async (id, key) => new FakeClient(id, key), calls, indexes, opts };
 }
 module.exports = { fakeMossBackend };

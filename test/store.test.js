@@ -67,3 +67,27 @@ test('extra descriptive words still match via the saved product title', () => {
   assert.ok(sameProduct('sony wh1000xm5 headphones', 'Sony WH-1000XM5', 'Sony WH-1000XM5 | Sony WH-1000XM5 Wireless Noise Canceling Headphones'));
   assert.ok(!sameProduct('sony wh1000xm4 headphones', 'Sony WH-1000XM5', 'Sony WH-1000XM5 Wireless Noise Canceling Headphones'));
 });
+
+test('if the local model download fails, it keeps working through Moss cloud lookups', async () => {
+  const backend = fakeMossBackend();
+  backend.opts.failLoad = true;
+  backend.opts.cloudStripsMetadata = true;
+  const a = await mk(backend).init();
+  assert.strictEqual(a.status, 'ready');
+  assert.strictEqual(a.mode, 'cloud');
+  assert.match(a.reason, /401/);
+  a.put('search', { key: 'Sony WH-1000XM5', scope: 'stores', text: 'Sony WH-1000XM5 | Sony WH-1000XM5 Wireless Noise Canceling Headphones', payload: { n: 1 } });
+  await a.flush();
+  clearInterval(a.retryTimer);
+  const b = await mk(backend).init();
+  clearInterval(b.retryTimer);
+  const exact = await b.get('search', { key: 'sony wh-1000xm5', scope: 'stores' });
+  assert.strictEqual(exact.match, 'exact');
+  assert.deepStrictEqual(exact.payload, { n: 1 });
+  const c = await mk(backend).init();
+  clearInterval(c.retryTimer);
+  const sem = await c.get('search', { key: 'sony wh1000xm5 headphones', scope: 'stores', semantic: true });
+  assert.strictEqual(sem && sem.match, 'semantic');
+  assert.strictEqual(await c.get('search', { key: 'sony wh1000xm4', scope: 'stores', semantic: true }), null);
+  assert.strictEqual(await c.get('trend', { key: 'sony wh-1000xm5', semantic: true }), null, 'other kinds are filtered out by id prefix');
+});
