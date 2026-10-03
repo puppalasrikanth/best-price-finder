@@ -23,7 +23,7 @@ const HOST = process.env.HOST || '127.0.0.1';
 const API_KEY = (process.env.TAVILY_API_KEY || '').trim();
 const LIVE = /^tvly-/.test(API_KEY) && !/your-key-here/.test(API_KEY);
 const ZOOWORK_KEY = /^zwp_/.test((process.env.ZOOWORK_API_KEY || '').trim()) ? process.env.ZOOWORK_API_KEY.trim() : '';
-const DEPTH = process.env.SEARCH_DEPTH === 'basic' ? 'basic' : 'advanced';
+const DEPTH = ['advanced', 'basic', 'fast', 'ultra-fast'].includes(process.env.SEARCH_DEPTH) ? process.env.SEARCH_DEPTH : 'fast';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const DEMO = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'demo.json'), 'utf8'));
 
@@ -33,14 +33,14 @@ const SUGGEST_ENABLED = process.env.SUGGESTIONS !== 'off';
 // instantly as a preview while live data refreshes in the background.
 const HOUR = 3600_000;
 const TTL = {
-  searchFresh: (Number(process.env.CACHE_MINUTES) || 30) * 60_000,
-  searchStale: (Number(process.env.SEARCH_STALE_HOURS) || 48) * HOUR,
   suggest: (Number(process.env.SUGGEST_CACHE_HOURS) || 168) * HOUR,
 };
 
+// Moss persistence is switched off unless MOSS_ENABLED=true; the store then runs in memory only.
+const MOSS_ON = process.env.MOSS_ENABLED === 'true';
 const store = new Store({
-  projectId: (process.env.MOSS_PROJECT_ID || '').trim(),
-  projectKey: (process.env.MOSS_PROJECT_KEY || '').trim(),
+  projectId: MOSS_ON ? (process.env.MOSS_PROJECT_ID || '').trim() : '',
+  projectKey: MOSS_ON ? (process.env.MOSS_PROJECT_KEY || '').trim() : '',
   indexName: process.env.MOSS_INDEX || 'pricescout-cache',
   cacheDir: path.join(__dirname, '.cache'),
 });
@@ -55,10 +55,6 @@ function ago(ms) {
   const h = Math.round(m / 60);
   if (h < 48) return `${h} h ago`;
   return `${Math.round(h / 24)} days ago`;
-}
-function hitDetail(hit) {
-  const what = hit.match === 'semantic' ? `similar search “${hit.matchedQuery}”` : 'this search';
-  return `Saved results for ${what} from ${ago(hit.ageMs)} · ${hit.tookMs} ms`;
 }
 
 const MIME = {
@@ -106,28 +102,15 @@ async function handleSearch(req, res, url) {
     return end();
   }
 
-  const hit = await store.get('search', { key: q, query: q, scope, maxAgeMs: TTL.searchStale, semantic: true });
-  if (hit && hit.ageMs < TTL.searchFresh) {
-    console.log(`[search] "${q}" served from ${hit.match} (${hit.tookMs} ms)`);
-    step('moss', 'done', hitDetail(hit));
-    for (const sys of ['tavily', 'parser', 'zoowork']) step(sys, 'done', `Loaded from Moss · saved ${ago(hit.ageMs)}`);
-    for (const o of hit.payload.offers || []) { if (!o.id) o.id = offerId(o.url); if (o.verified) o.check = 'cached'; }
-    send('final', { ...hit.payload, query: q, cached: true, cache: { ageMs: hit.ageMs, match: hit.match, matchedQuery: hit.matchedQuery, tookMs: hit.tookMs } });
-    return end();
-  }
-  if (hit) {
-    step('moss', 'done', `${hitDetail(hit)} — showing them while refreshing live`);
-    for (const o of hit.payload.offers || []) { if (!o.id) o.id = offerId(o.url); if (o.verified) o.check = 'cached'; }
-    send('preliminary', { ...hit.payload, query: q, stale: true, verification: 'pending', cache: { ageMs: hit.ageMs, match: hit.match, matchedQuery: hit.matchedQuery, tookMs: hit.tookMs } });
-  } else {
-    step('moss', 'running', store.enabled ? 'Nothing saved for this product yet — searching live' : `Moss unavailable (${store.reason || store.status}) — using memory only`);
-  }
+  // Stop work (no new ZooWork checks) as soon as the shopper leaves or starts another search.
+  const ctrl = new AbortController();
+  req.on('close', () => ctrl.abort());
 
   const started = Date.now();
-  console.log(`[search] "${q}" (${scope}) started${hit ? ' (stale preview sent)' : ''}`);
+  console.log(`[search] "${q}" (${scope}) started`);
   try {
     const result = await runSearch({
-      query: q, scope, tavilyKey: API_KEY, zooworkKey: ZOOWORK_KEY, depth: DEPTH, store,
+      query: q, scope, tavilyKey: API_KEY, zooworkKey: ZOOWORK_KEY, depth: DEPTH, store, signal: ctrl.signal,
       emit: (ev) => {
         if (ev.type === 'step') {
           if (ev.system !== 'store') console.log(`  [${ev.system}] ${ev.status}: ${ev.detail}`);
@@ -140,21 +123,12 @@ async function handleSearch(req, res, url) {
       },
     });
     const data = { mode: 'live', query: q, scope, ...result, fetchedAt: new Date().toISOString(), tookMs: Date.now() - started };
-    if (result.verification !== 'failed' && result.offers.length) {
-      const best = result.summary.bestNew || result.summary.bestAny;
-      store.put('search', { key: q, query: q, scope, text: [q, best && best.title].filter(Boolean).join(' | '), payload: data });
-    }
     console.log(`[search] "${q}" done: ${result.offers.length} offers, verification=${result.verification}, ${data.tookMs} ms`);
     send('final', { ...data, cached: false });
   } catch (err) {
     const timeout = err.name === 'TimeoutError' || err.name === 'AbortError';
     console.error(`[search] "${q}" failed:`, err.message);
-    if (hit) {
-      step('tavily', 'error', `${err.message} — keeping the saved results`);
-      send('final', { ...hit.payload, query: q, stale: true, cached: true, cache: { ageMs: hit.ageMs, match: hit.match, matchedQuery: hit.matchedQuery } });
-    } else {
-      send('error', { error: timeout ? 'The search took too long. Please try again.' : err.message || 'Search failed.' });
-    }
+    if (!ctrl.signal.aborted) send('error', { error: timeout ? 'The search took too long. Please try again.' : err.message || 'Search failed.' });
   }
   end();
 }
@@ -258,18 +232,18 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/api/search') return void handleSearch(req, res, url);
   if (url.pathname === '/img') return void handleImage(req, res, url);
   if (url.pathname === '/api/suggest') return void handleSuggest(req, res, url);
-  if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true, mode: LIVE ? 'live' : 'demo', depth: DEPTH, verification: ZOOWORK_KEY ? 'zoowork' : 'off', moss: store.info() });
+  if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true, mode: LIVE ? 'live' : 'demo', depth: DEPTH, verification: ZOOWORK_KEY ? 'zoowork' : 'off', moss: MOSS_ON ? store.info() : 'disabled' });
   serveStatic(req, res, url);
 });
 
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
-    console.log(`\n  PriceScout — powered by ZooWork, Tavily and Moss\n  Running at http://localhost:${PORT}`);
+    console.log(`\n  PriceScout — powered by ZooWork & Tavily\n  Running at http://localhost:${PORT}`);
     console.log(LIVE
-      ? `  Mode: LIVE (Tavily ${DEPTH} search, ${DEPTH === 'advanced' ? 2 : 1} credit(s) per new search)\n`
+      ? `  Mode: LIVE (Tavily ${DEPTH} search, ${DEPTH === 'advanced' ? 2 : 1} credit(s) per search)\n`
       : '  Mode: DEMO — add your Tavily key to .env (TAVILY_API_KEY=tvly-...) and restart for live results\n');
     console.log(ZOOWORK_KEY ? '  Price verification: ZooWork agent (checks each store page)\n' : '  Price verification: OFF — add ZOOWORK_API_KEY to .env to verify prices\n');
-    console.log(store.status === 'off' ? '  Persistence: in-memory only — add MOSS_PROJECT_ID and MOSS_PROJECT_KEY to .env to persist results in Moss\n' : '  Persistence: Moss (loading index…)\n');
+    console.log(MOSS_ON ? '  Persistence: Moss (loading index…)\n' : '  Persistence: off (Moss disabled) — store confirmations kept in memory for this session\n');
   });
   store.init();
   const flushAndExit = () => { store.flush().finally(() => process.exit(0)); setTimeout(() => process.exit(0), 5000).unref(); };

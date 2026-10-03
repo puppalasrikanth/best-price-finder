@@ -123,7 +123,7 @@ body.has-results .landing { display: none; }
 .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--accent-soft); border-top-color: var(--accent); animation: spin .8s linear infinite; flex-shrink: 0; }
 .progress.is-done .spinner { animation: none; border-color: var(--accent); background: var(--accent); }
 @keyframes spin { to { transform: rotate(360deg); } }
-.stepper { list-style: none; margin: 12px 0 0; padding: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.stepper { list-style: none; margin: 12px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .stepper li { position: relative; display: flex; gap: 9px; align-items: flex-start; padding: 9px 11px; border-radius: 12px; background: var(--surface-2); min-width: 0; }
 .stepper .ic { flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 800; background: var(--surface-3); color: var(--muted); }
 .stepper .txt { min-width: 0; }
@@ -255,7 +255,7 @@ body.has-results .landing { display: none; }
 /* ---------- Responsive ---------- */
 @media (max-width: 980px) {
   .overview { grid-template-columns: 1fr; }
-  .stepper { grid-template-columns: repeat(2, 1fr); }
+  .stepper { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 680px) {
   main { padding: 0 16px; }
@@ -320,7 +320,7 @@ body.has-results .landing { display: none; }
 .meter-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .dot.ok { background: var(--accent); }
-.dot.moss { background: var(--accent); box-shadow: inset 0 0 0 2px var(--surface), 0 0 0 1px var(--accent); }
+.dot.earlier { background: var(--accent); box-shadow: inset 0 0 0 2px var(--surface), 0 0 0 1px var(--accent); }
 .dot.run { background: var(--warn); }
 .dot.bad { background: var(--surface-3); }
 .check-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow: auto; }

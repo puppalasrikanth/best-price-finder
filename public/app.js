@@ -33,12 +33,12 @@
     { key: 'tavily', name: 'Find products', sub: 'Tavily' },
     { key: 'parser', name: 'Show prices & photos', sub: 'Instantly' },
     { key: 'zoowork', name: 'Confirm each store', sub: 'ZooWork agents' },
-    { key: 'moss', name: 'Save for next time', sub: 'Moss' },
   ];
 
   let scope = 'stores';
   let data = null; // current search result (offers update live)
   let searchError = null;
+  let hint = null; // product the shopper picked from suggestions — shown instantly while Tavily runs
   let view = 'list';
   let stream = null;
   let t0 = 0;
@@ -189,7 +189,7 @@
     if (!it) return;
     input.value = it.name;
     closeSuggest();
-    search(it.name);
+    search(it.name, it.kind === 'product' ? it : null);
   }
 
   input.addEventListener('input', () => {
@@ -291,7 +291,8 @@
   }
 
   // ---------- search ----------
-  function search(q) {
+  function search(q, picked = null) {
+    hint = picked && picked.name === q ? picked : null;
     if (stream) stream.close();
     document.body.classList.add('has-results');
     btn.disabled = true; btn.textContent = 'Searching…';
@@ -383,7 +384,7 @@
     const others = data.offers.filter((o) => s.ok(o) && o !== b && o.condition === b.condition).sort((x, y) => x.price - y.price);
     const next = others[0];
     const changed = b.snippetPrice != null && Math.abs(b.snippetPrice - b.price) >= 0.01 ? ` Search results said ${money(b.snippetPrice)}.` : '';
-    const how = b.check === 'cached' ? `Confirmed on ${b.store}’s page ${b.savedAgoMs != null ? agoText(b.savedAgoMs) : 'recently'} (saved in Moss).` : `Confirmed on ${b.store}’s page just now by ZooWork.`;
+    const how = b.check === 'cached' ? `Confirmed by ZooWork on ${b.store}’s page ${b.savedAgoMs != null ? agoText(b.savedAgoMs) : 'recently'}.` : `Confirmed on ${b.store}’s page just now by ZooWork.`;
     return {
       kind: 'good',
       title: next ? `Lowest confirmed price — ${money(next.price - b.price)} less than ${next.store}` : 'Lowest confirmed price',
@@ -410,7 +411,11 @@
     if (!data) {
       productCard.innerHTML = searchError
         ? `<div class="product-top"><div class="product-img">${PLACEHOLDER}</div><div><p class="eyebrow">Store search failed</p><p class="product-name">${esc(input.value)}</p></div></div>`
-        : '<div class="product-top"><div class="product-img skel"></div><div style="flex:1"><div class="skel-line" style="width:70%"></div><div class="skel-line" style="width:40%;height:34px;margin-top:10px"></div></div></div>';
+        : `<div class="product-top"><div class="product-img${hint && hint.image ? '' : ' skel'}">${hint && hint.image ? imgHtml(hint.image, hint.name) : ''}</div><div style="flex:1">
+            <p class="product-name">${esc(hint ? hint.name : input.value)}</p>
+            <p class="eyebrow">Finding prices at 25+ US stores…</p>
+            <div class="skel-line" style="width:45%;height:38px;margin-top:6px"></div></div></div>
+          <div class="verdict" data-kind="pending"><span class="vi"></span><div><strong>Searching stores with Tavily…</strong><p>Prices and photos appear in a moment, then ZooWork confirms each store.</p></div></div>`;
       return;
     }
     const b = s.best;
@@ -432,7 +437,7 @@
       <div class="facts">
         ${fact('Stores compared', s.stores, `${data.offers.length} offers`)}
         ${fact('Price range', s.low != null ? `${money(s.low)}${s.high > s.low ? `–${money(s.high)}` : ''}` : '—', s.anyVerified ? 'confirmed prices' : 'from search results')}
-        ${fact('Confirmed', `${s.verified + s.cached} of ${s.total}`, s.cached ? `${s.cached} from Moss` : s.pending ? 'checking…' : '')}
+        ${fact('Confirmed', `${s.verified + s.cached} of ${s.total}`, s.pending ? 'checking…' : '')}
       </div>
       <div class="cta-row">
         ${b ? `<a class="btn" href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">Buy at ${esc(b.store)} <span aria-hidden="true">→</span></a>` : ''}
@@ -453,12 +458,12 @@
       : s.pending ? `Checking ${s.pending} of ${s.total} store pages in parallel…`
       : `${s.verified + s.cached} of ${s.total} store pages confirmed`;
     const rows = data.offers.filter((o) => o.check && o.check !== 'skipped');
-    const statusTxt = { queued: 'In queue', checking: 'Checking…', verified: 'Confirmed', cached: '<span class="long">Confirmed · </span>from Moss', failed: 'Not confirmed' };
+    const statusTxt = { queued: 'In queue', checking: 'Checking…', verified: 'Confirmed', cached: 'Confirmed earlier', failed: 'Not confirmed' };
     checkBody.innerHTML = `
       <div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="Store pages checked">
         <span class="seg-ok" style="width:${s.total ? ((s.verified + s.cached) / s.total) * 100 : 0}%"></span><span class="seg-bad" style="width:${s.total ? (s.failed / s.total) * 100 : 0}%"></span>
       </div>
-      <div class="meter-legend"><span><i class="dot ok"></i>${s.verified} confirmed now</span><span><i class="dot moss"></i>${s.cached} from Moss</span><span><i class="dot run"></i>${s.checking} checking · ${s.queued} to go</span><span><i class="dot bad"></i>${s.failed} not confirmed</span></div>
+      <div class="meter-legend"><span><i class="dot ok"></i>${s.verified} confirmed now</span>${s.cached ? `<span><i class="dot earlier"></i>${s.cached} confirmed earlier</span>` : ''}<span><i class="dot run"></i>${s.checking} checking · ${s.queued} to go</span><span><i class="dot bad"></i>${s.failed} not confirmed</span></div>
       <ul class="check-list">${rows.map((o) => `
         <li data-check="${o.check}" class="${flashed.has(o.id) && Date.now() - flashed.get(o.id) < 1600 ? 'flash' : ''}">
           <span class="ck-ic" aria-hidden="true"></span>
@@ -466,7 +471,7 @@
           <span class="ck-status" title="${esc(o.note || '')}">${statusTxt[o.check] || ''}${o.check === 'failed' && o.note ? ` — ${esc(o.note)}` : ''}</span>
           <span class="ck-price">${o.price != null ? money(o.price) : ''}</span>
         </li>`).join('') || '<li class="muted">Nothing to check</li>'}</ul>
-      <p class="check-foot">Photos stream through a local image cache · confirmations are saved in Moss for instant repeat searches.</p>`;
+      <p class="check-foot">Each store page is opened by its own ZooWork agent, cheapest offers first. Photos stream through a local image cache.</p>`;
   }
 
   function renderOffers(s) {
@@ -493,7 +498,7 @@
 
     const best = s.best;
     compareTitle.textContent = `Compare ${s.stores} store${s.stores === 1 ? '' : 's'}`;
-    const saved = data.cache ? ` · loaded from Moss (saved ${agoText(data.cache.ageMs)})` : '';
+    const saved = '';
     compareSub.textContent = (s.pending
       ? `Prices and photos from Tavily — ZooWork is confirming ${s.pending} now`
       : s.anyVerified ? `${s.verified + s.cached} prices confirmed on the store page` : 'Prices from search results — confirm at the store') + saved;
@@ -504,7 +509,7 @@
       const tags = [];
       if (o.isBest) tags.push('<span class="tag best">Best price</span>');
       if (o.check === 'verified') tags.push('<span class="tag ok">✓ Confirmed<span class="long"> by ZooWork</span></span>');
-      else if (o.check === 'cached') tags.push('<span class="tag ok moss">✓ Confirmed<span class="long"> · saved in Moss</span></span>');
+      else if (o.check === 'cached') tags.push(`<span class="tag ok">✓ Confirmed<span class="long"> ${o.savedAgoMs != null ? agoText(o.savedAgoMs) : 'earlier'}</span></span>`);
       else if (o.check === 'checking') tags.push('<span class="tag pending"><span class="mini-spin"></span><span class="long">ZooWork </span>checking…</span>');
       else if (o.check === 'queued') tags.push('<span class="tag">In queue</span>');
       else if (o.check === 'failed') tags.push('<span class="tag">Not confirmed</span>');
