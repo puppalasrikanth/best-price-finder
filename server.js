@@ -7,6 +7,8 @@ const { runSearch } = require('./lib/pipeline');
 const { fetchSuggestions, buildSuggestions } = require('./lib/suggest');
 const { buildOffers } = require('./lib/extract');
 const { Store } = require('./lib/store');
+const { Catalog } = require('./lib/catalog');
+const { spawn } = require('child_process');
 
 // --- tiny .env loader ---------------------------------------------------------
 (function loadEnv() {
@@ -45,6 +47,29 @@ const store = new Store({
   cacheDir: path.join(__dirname, '.cache'),
 });
 const { offerId } = require('./lib/pipeline');
+
+// Product-name catalog in Moss for type-ahead (independent of MOSS_ENABLED, which is for search persistence).
+const CATALOG_ON = process.env.MOSS_CATALOG !== 'false';
+const catalog = new Catalog({
+  projectId: CATALOG_ON ? (process.env.MOSS_PROJECT_ID || '').trim() : '',
+  projectKey: CATALOG_ON ? (process.env.MOSS_PROJECT_KEY || '').trim() : '',
+  indexName: process.env.CATALOG_INDEX || 'pricescout-products',
+  cacheDir: path.join(__dirname, '.cache'),
+  timeoutMs: Number(process.env.CATALOG_TIMEOUT_MS) || 400,
+});
+let importer = null; // running catalog import (child process)
+function startCatalogImport() {
+  if (importer || catalog.status !== 'ready') return;
+  console.log('[catalog] starting the product catalog import in the background (Amazon Reviews 2023 → Moss). Type-ahead uses Tavily until it has data.');
+  importer = spawn(process.execPath, [path.join(__dirname, 'scripts', 'import-catalog.js')], { cwd: __dirname, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const relay = (d) => String(d).split(/\r?\n/).filter(Boolean).forEach((l) => {
+    console.log(l);
+    if (/uploaded|import finished/.test(l)) catalog.refresh();
+  });
+  importer.stdout.on('data', relay);
+  importer.stderr.on('data', relay);
+  importer.on('exit', (code) => { console.log(`[catalog] import process exited (${code})`); importer = null; catalog.refresh(); });
+}
 const crypto = require('crypto');
 const IMG_DIR = path.join(__dirname, '.cache', 'img');
 
@@ -123,6 +148,7 @@ async function handleSearch(req, res, url) {
       },
     });
     const data = { mode: 'live', query: q, scope, ...result, fetchedAt: new Date().toISOString(), tookMs: Date.now() - started };
+    catalog.learn(result.offers.filter((o) => !o.listing && o.title).map((o) => ({ name: o.title, image: o.image, brand: '' })));
     console.log(`[search] "${q}" done: ${result.offers.length} offers, verification=${result.verification}, ${data.tookMs} ms`);
     send('final', { ...data, cached: false });
   } catch (err) {
@@ -133,27 +159,46 @@ async function handleSearch(req, res, url) {
   end();
 }
 
-// Type-ahead: Tavily-backed product suggestions (JSON), persisted in Moss.
+// Type-ahead: Moss product catalog first (fast); Tavily only when Moss has too few matches or is slow.
+// Products found through Tavily are added to the catalog so it keeps growing.
 async function handleSuggest(req, res, url) {
   const q = (url.searchParams.get('q') || '').trim().replace(/\s+/g, ' ').slice(0, 80);
   if (q.length < 3 || !SUGGEST_ENABLED) return sendJson(res, 200, { query: q, suggestions: [] });
+  const t0 = Date.now();
+  const memo = await store.get('suggest', { key: q, query: q, maxAgeMs: TTL.suggest });
+  if (memo) return sendJson(res, 200, { query: q, ...memo.payload, cached: true, tookMs: Date.now() - t0 });
+
+  const fromMoss = await catalog.suggest(q); // null = unavailable or slower than CATALOG_TIMEOUT_MS
+  if (fromMoss && fromMoss.length >= 3) {
+    const payload = { suggestions: fromMoss, source: 'moss' };
+    store.put('suggest', { key: q, payload });
+    console.log(`[suggest] "${q}" -> ${fromMoss.length} from Moss in ${Date.now() - t0} ms`);
+    return sendJson(res, 200, { query: q, ...payload, tookMs: Date.now() - t0 });
+  }
+
   if (!LIVE) {
     const fixtures = ['demo', 'airpods'].map((f) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', `${f}.json`), 'utf8')));
-    const suggestions = fixtures.flatMap((fx) => buildSuggestions(fx, q));
-    return sendJson(res, 200, { query: q, suggestions: suggestions.slice(0, 7), demo: true });
+    const suggestions = [...(fromMoss || []), ...fixtures.flatMap((fx) => buildSuggestions(fx, q))].slice(0, 7);
+    return sendJson(res, 200, { query: q, suggestions, source: 'demo', demo: true });
   }
-  const hit = await store.get('suggest', { key: q, query: q, maxAgeMs: TTL.suggest });
-  if (hit) return sendJson(res, 200, { query: q, suggestions: hit.payload, cached: hit.match, tookMs: hit.tookMs });
   try {
-    const t0 = Date.now();
     const raw = await fetchSuggestions(q, { apiKey: API_KEY });
-    const suggestions = buildSuggestions(raw, q);
-    store.put('suggest', { key: q, query: q, text: [q, ...suggestions.map((s) => s.name)].join(' | '), payload: suggestions });
-    console.log(`[suggest] "${q}" -> ${suggestions.length} in ${Date.now() - t0} ms`);
-    sendJson(res, 200, { query: q, suggestions });
+    const fromTavily = buildSuggestions(raw, q);
+    catalog.learn(fromTavily);
+    const seen = new Set();
+    const suggestions = [...(fromMoss || []), ...fromTavily].filter((x) => {
+      const k = x.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').slice(0, 6).join(' ');
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    }).slice(0, 7);
+    const payload = { suggestions, source: fromMoss && fromMoss.length ? 'moss+tavily' : 'tavily' };
+    store.put('suggest', { key: q, payload });
+    console.log(`[suggest] "${q}" -> ${fromMoss ? fromMoss.length : 0} Moss + ${fromTavily.length} Tavily in ${Date.now() - t0} ms`);
+    sendJson(res, 200, { query: q, ...payload, tookMs: Date.now() - t0 });
   } catch (err) {
     console.error(`[suggest] "${q}" failed:`, err.message);
-    sendJson(res, 200, { query: q, suggestions: [], error: err.message });
+    sendJson(res, 200, { query: q, suggestions: fromMoss || [], source: 'moss', error: err.message });
   }
 }
 
@@ -232,7 +277,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/api/search') return void handleSearch(req, res, url);
   if (url.pathname === '/img') return void handleImage(req, res, url);
   if (url.pathname === '/api/suggest') return void handleSuggest(req, res, url);
-  if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true, mode: LIVE ? 'live' : 'demo', depth: DEPTH, verification: ZOOWORK_KEY ? 'zoowork' : 'off', moss: MOSS_ON ? store.info() : 'disabled' });
+  if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true, mode: LIVE ? 'live' : 'demo', depth: DEPTH, verification: ZOOWORK_KEY ? 'zoowork' : 'off', moss: MOSS_ON ? store.info() : 'disabled', catalog: { ...catalog.info(), importing: !!importer } });
   serveStatic(req, res, url);
 });
 
@@ -244,12 +289,24 @@ if (require.main === module) {
       : '  Mode: DEMO — add your Tavily key to .env (TAVILY_API_KEY=tvly-...) and restart for live results\n');
     console.log(ZOOWORK_KEY ? '  Price verification: ZooWork agent (checks each store page)\n' : '  Price verification: OFF — add ZOOWORK_API_KEY to .env to verify prices\n');
     console.log(MOSS_ON ? '  Persistence: Moss (loading index…)\n' : '  Persistence: off (Moss disabled) — store confirmations kept in memory for this session\n');
+    console.log(catalog.status === 'off' ? '  Type-ahead: Tavily (add MOSS_PROJECT_ID / MOSS_PROJECT_KEY for the Moss product catalog)\n' : '  Type-ahead: Moss product catalog first, Tavily fallback\n');
   });
   store.init();
-  const flushAndExit = () => { store.flush().finally(() => process.exit(0)); setTimeout(() => process.exit(0), 5000).unref(); };
+  catalog.init().then(() => {
+    if (catalog.status !== 'ready') return;
+    let state = {};
+    try { state = JSON.parse(fs.readFileSync(path.join(__dirname, '.cache', 'catalog-import.json'), 'utf8')); } catch {}
+    if (process.env.CATALOG_AUTO_IMPORT !== 'false' && !state.completedAt) startCatalogImport();
+  });
+  const flushAndExit = () => {
+    if (importer) importer.kill();
+    Promise.allSettled([store.flush(), catalog.flush()]).finally(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5000).unref();
+  };
   process.on('SIGINT', flushAndExit);
   process.on('SIGTERM', flushAndExit);
 }
 
 module.exports = server;
 module.exports.store = store;
+module.exports.catalog = catalog;

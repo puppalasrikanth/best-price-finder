@@ -95,6 +95,8 @@
   let sugCtrl = null;
   let sugQuery = '';
   let sugLoading = false;
+  let sugSource = 'tavily';
+  const sugSources = new Map();
 
   const sugNorm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const sugMatch = (name, q) => {
@@ -134,7 +136,8 @@
     items.forEach((it, i) => {
       if (it.kind === 'product' && !headerDone) {
         headerDone = true;
-        html += `<div class="sg-head">Products at US stores<span class="src">via Tavily</span></div>`;
+        const label = { moss: 'via Moss catalog', 'moss+tavily': 'via Moss + Tavily', tavily: 'via Tavily', demo: 'sample data' }[sugSource] || 'via Tavily';
+        html += `<div class="sg-head">Products<span class="src">${label}</span></div>`;
       }
       const thumb = it.kind === 'product'
         ? `<span class="sg-thumb">${it.image ? `<img src="${esc(it.image)}" alt="" referrerpolicy="no-referrer" onerror="this.outerHTML=window.__ph">` : PLACEHOLDER}</span>`
@@ -155,7 +158,7 @@
 
   async function fetchSuggest(q) {
     const key = q.toLowerCase();
-    if (sugCache.has(key)) { sugItems = sugCache.get(key); sugQuery = key; sugLoading = false; renderSuggest(); return; }
+    if (sugCache.has(key)) { sugItems = sugCache.get(key); sugSource = sugSources.get(key) || 'tavily'; sugQuery = key; sugLoading = false; renderSuggest(); return; }
     // Reuse a shorter query's results while the user keeps typing (saves Tavily credits).
     for (let k = key.length - 1; k >= 3; k--) {
       const prev = sugCache.get(key.slice(0, k));
@@ -173,9 +176,10 @@
     try {
       const r = await fetch('/api/suggest?' + new URLSearchParams({ q }), { signal: sugCtrl.signal });
       const j = await r.json();
-      if (!j.error) sugCache.set(key, j.suggestions || []);
+      if (!j.error) { sugCache.set(key, j.suggestions || []); sugSources.set(key, j.source || 'tavily'); }
       if (input.value.trim().toLowerCase() !== key) return;
       sugItems = j.suggestions || [];
+      sugSource = j.source || 'tavily';
       sugQuery = key;
     } catch (e) {
       if (e.name === 'AbortError') return;
@@ -199,7 +203,7 @@
     if (q.length < 3) { sugItems = []; sugLoading = false; renderSuggest(); return; }
     sugLoading = !sugCache.has(q.toLowerCase());
     renderSuggest();
-    sugTimer = setTimeout(() => fetchSuggest(q), 350);
+    sugTimer = setTimeout(() => fetchSuggest(q), 180); // Moss answers in ms, so a short pause is enough
   });
   input.addEventListener('focus', () => { if (!btn.disabled || input.value.trim().length < 3) renderSuggest(); });
   input.addEventListener('blur', () => setTimeout(closeSuggest, 120));

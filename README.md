@@ -20,13 +20,20 @@ Without a key the portal runs in **demo mode** using saved sample results, so yo
 
 Each new search uses 2 Tavily credits (`SEARCH_DEPTH=advanced`), or 1 credit with `SEARCH_DEPTH=basic`. Repeat searches within `CACHE_MINUTES` (default 30) are free. The free Tavily plan includes 1,000 credits per month.
 
-## Moss (disabled)
+## Moss
 
-Moss persistence is switched off (`MOSS_ENABLED=false`, the default). Store confirmations are kept in memory for 30 minutes (`OFFER_CACHE_MINUTES`) so re-searching a product doesn't re-check pages that were just confirmed. The Moss code (`lib/store.js`) is kept; set `MOSS_ENABLED=true` to turn it back on later.
+**Product catalog for type-ahead (on).** Moss index `pricescout-products` holds product names for instant suggestions while typing:
+
+- **Seed:** the ~100,000 most-reviewed products from [Amazon Reviews 2023](https://amazon-reviews-2023.github.io/) (McAuley Lab, UCSD) across Electronics, Cell Phones, Toys, Video Games, Appliances, Office and Musical Instruments. `scripts/import-catalog.js` streams each category's gzipped metadata once (very roughly 3–5 GB in total, nothing large kept on disk), keeps the top products by number of ratings, cleans the names and uploads each category as soon as it's done. It starts automatically in the background on first launch (`CATALOG_AUTO_IMPORT=false` to skip) and resumes if interrupted; run `node scripts/import-catalog.js --restart` to rebuild. Note the dataset ends in Sept 2023 — newer products come from learning.
+- **Learning:** every product name Tavily returns (suggestions and search results) is added automatically.
+- **Lookup:** `/api/suggest` asks Moss first; if Moss has fewer than 3 matches or takes longer than `CATALOG_TIMEOUT_MS` (400 ms), it falls back to Tavily and merges the results. The dropdown shows the source.
+- Moss's free tier allows 10 indexes × 100,000 documents; the catalog uses one index (`CATALOG_SIZE`, default 100,000).
+
+**Search persistence (off).** `MOSS_ENABLED=false`: store confirmations are kept in memory for 30 minutes (`OFFER_CACHE_MINUTES`). Set `MOSS_ENABLED=true` to persist them in Moss.
 
 ## How it works
 
-1. **Type-ahead** (`/api/suggest`): after 3+ characters Tavily suggests matching products; saved in Moss.
+1. **Type-ahead** (`/api/suggest`): after 3+ characters the Moss product catalog suggests matching products; Tavily fills in when Moss has too few matches.
 2. **Instant results** (`/api/search`, Server-Sent Events): Tavily (`SEARCH_DEPTH=fast`) returns store pages with images and prices; the page renders the moment they're parsed (`preliminary` event). Picking a suggestion shows that product's name and photo instantly while Tavily runs.
 3. **Recent confirmations**: pages confirmed in the last 30 minutes update instantly after the first render and are not re-checked; failed checks are always retried.
 4. **Live confirmation**: the cheapest remaining pages (up to `ZOOWORK_MAX_PAGES`) each get their own ZooWork session, run on a pool of `ZOOWORK_CONCURRENCY` agents (default 3) in parallel. Each agent confirms price, main product photo, condition and stock; the page updates that row as each one finishes (`offer` events). Only confirmed, in-stock prices can win best price.
