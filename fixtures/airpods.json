@@ -1,0 +1,70 @@
+{
+  "query": "AirPods Pro 2 price",
+  "images": [
+    "https://pisces.bbystatic.com/image2/BestBuy_US/images/products/6447/6447382_sd.jpg",
+    "https://store.storeimages.cdn-apple.com/1/as-images.apple.com/is/refurb-airpodspro-usbc-2024?wid=1200&hei=630&fmt=jpeg&qlt=95&.v=1709763324798"
+  ],
+  "results": [
+    {
+      "url": "https://www.walmart.com/ip/AirPods-Pro-2nd-generation-with-MagSafe-Case-USB-C/5689919121",
+      "title": "Restored Apple AirPods Pro 2 In-Ear Headphones ...",
+      "content": "Current price is USD$173.99$17399. Restored: Like New$173.99 $173.99 … current price $119.97, Was $179.00",
+      "score": 0.8657,
+      "images": []
+    },
+    {
+      "url": "https://www.bestbuy.com/product/apple-airpods-pro-2-wireless-active-noise-cancelling-earbuds-with-hearing-aid-feature-white/JJGCQ88C8X",
+      "title": "AirPods Pro 2, Wireless Active Noise Cancelling Earbuds ...",
+      "content": "Wireless Active Noise Cancelling Earbuds. New and Refurbished $164.99 - $269.00 Finance options needed",
+      "score": 0.8148,
+      "images": []
+    },
+    {
+      "url": "https://www.apple.com/shop/product/ftjv3ll/a/Refurbished-AirPods-Pro-2-with-MagSafe-Charging-Case-USB-%E2%80%8DC",
+      "title": "Refurbished AirPods Pro 2 with MagSafe Charging Case (USB‑C) - Apple",
+      "content": "The service fee for accidental damage is $29. Separate service charges apply to each repair or replacement performed. Applicable taxes may apply.",
+      "score": 0.5671,
+      "images": [
+        "https://store.storeimages.cdn-apple.com/1/as-images.apple.com/is/refurb-airpodspro-usbc-2024?wid=1200&hei=630&fmt=jpeg&qlt=95&.v=1709763324798"
+      ]
+    },
+    {
+      "url": "https://www.amazon.com/clp/B0D1XD1ZV3",
+      "title": "open prime modal",
+      "content": "## Skip to\n\n## Keyboard shortcuts\n\nApple AirPods Pro 2 Wireless Earbuds, Active Noise Cancellation, Hearing Aid Feature, Bluetooth Headphones, Transparency, Personalized Spatial Audio, High-Fidelity Sound, H2 Chip, USB-C Charging\n\n# More to explore\n\n# FREE Delivery\n\n# Price (INR)",
+      "score": 0.4724,
+      "images": [
+        "https://m.media-amazon.com/images/I/61SUj2aKoEL.jpg",
+        "https://m.media-amazon.com/images/G/01/gno/sprites/nav-sprite-global-1x-reorg-privacy._CB779528203_.png"
+      ]
+    },
+    {
+      "url": "https://support.apple.com/en-us/111851",
+      "title": "AirPods Pro 2 - Tech Specs - Apple Support",
+      "content": "# AirPods Pro 2 - Tech Specs\n\nYear introduced: 2022",
+      "score": 0.3741,
+      "images": ["https://cdsassets.apple.com/live/SZLF0YNV/images/sp/111851_sp880-airpods-Pro-2nd-gen.png"]
+    },
+    {
+      "url": "https://www.apple.com/shop/buy-airpods/airpods-pro-3",
+      "title": "Buy AirPods Pro 3 - Apple",
+      "content": "The ultimate over-ear personal listening experience.\n\n$549\n\nUp to 1.5x more Active Noise Cancellation than original AirPods MaxFootnote 5\n\n### AirPods Pro 3\n\nThe world’s best in‑ear Active Noise Cancellation,Footnote 1 with heart rate sensing during workouts.Footnote 2\n\n$249\n\n### AirPods 5\n\n$129",
+      "score": 0.3214,
+      "images": ["https://store.storeimages.cdn-apple.com/1/as-images.apple.com/is/airpods-pro-3-hero-select-202509?wid=1200&hei=630&fmt=jpeg&qlt=95&.v=1758077264484"]
+    },
+    {
+      "url": "https://www.apple.com/newsroom/2024/09/apple-introduces-airpods-4-and-a-hearing-health-experience-with-airpods-pro-2",
+      "title": "Apple introduces AirPods 4 and a hearing health experience with AirPods Pro 2 - Apple",
+      "content": "CUPERTINO, CALIFORNIA Apple today announced a groundbreaking new lineup of AirPods models and features.",
+      "score": 0.3044,
+      "images": []
+    },
+    {
+      "url": "https://www.apple.com/airpods/compare",
+      "title": "AirPods - Compare Models - Apple",
+      "content": "# Compare AirPods models\n\n### AirPods Pro 3\n\n### AirPods Pro 2",
+      "score": 0.2677,
+      "images": []
+    }
+  ]
+}
