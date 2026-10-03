@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { runSearch } = require('./lib/pipeline');
 const { fetchTrend, analyzeTrend } = require('./lib/trend');
+const { fetchSuggestions, buildSuggestions } = require('./lib/suggest');
 const { buildOffers } = require('./lib/extract');
 
 // --- tiny .env loader ---------------------------------------------------------
@@ -29,6 +30,9 @@ const DEMO = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'demo.j
 
 const cache = new Map(); // key -> { at, data }
 const trendCache = new Map(); // query -> { at, raw }
+const suggestCache = new Map(); // query -> { at, suggestions }
+const SUGGEST_CACHE_HOURS = Number(process.env.SUGGEST_CACHE_HOURS) || 24;
+const SUGGEST_ENABLED = process.env.SUGGESTIONS !== 'off';
 const trendInflight = new Map(); // query -> Promise<raw>
 const TREND_CACHE_HOURS = Number(process.env.TREND_CACHE_HOURS) || 12;
 const DEMO_TREND = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'trend-demo.json'), 'utf8'));
@@ -111,6 +115,32 @@ async function handleSearch(req, res, url) {
     send('error', { error: timeout ? 'The search took too long. Please try again.' : err.message || 'Search failed.' });
   }
   finish();
+}
+
+// Type-ahead: Tavily-backed product suggestions (JSON). Cached; each new prefix costs one Tavily call.
+async function handleSuggest(req, res, url) {
+  const q = (url.searchParams.get('q') || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+  if (q.length < 3 || !SUGGEST_ENABLED) return sendJson(res, 200, { query: q, suggestions: [] });
+  if (!LIVE) {
+    const fixtures = ['demo', 'airpods'].map((f) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', `${f}.json`), 'utf8')));
+    const suggestions = fixtures.flatMap((fx) => buildSuggestions(fx, q));
+    return sendJson(res, 200, { query: q, suggestions: suggestions.slice(0, 7), demo: true });
+  }
+  const key = q.toLowerCase();
+  const hit = suggestCache.get(key);
+  if (hit && Date.now() - hit.at < SUGGEST_CACHE_HOURS * 3600_000) return sendJson(res, 200, { query: q, suggestions: hit.suggestions, cached: true });
+  try {
+    const t0 = Date.now();
+    const raw = await fetchSuggestions(q, { apiKey: API_KEY });
+    const suggestions = buildSuggestions(raw, q);
+    suggestCache.set(key, { at: Date.now(), suggestions });
+    if (suggestCache.size > 2000) suggestCache.delete(suggestCache.keys().next().value);
+    console.log(`[suggest] "${q}" -> ${suggestions.length} in ${Date.now() - t0} ms`);
+    sendJson(res, 200, { query: q, suggestions });
+  } catch (err) {
+    console.error(`[suggest] "${q}" failed:`, err.message);
+    sendJson(res, 200, { query: q, suggestions: [], error: err.message });
+  }
 }
 
 function openStream(req, res) {
@@ -206,6 +236,7 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/api/search') return void handleSearch(req, res, url);
   if (url.pathname === '/api/trend') return void handleTrend(req, res, url);
+  if (url.pathname === '/api/suggest') return void handleSuggest(req, res, url);
   if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true, mode: LIVE ? 'live' : 'demo', depth: DEPTH, verification: ZOOWORK_KEY ? 'zoowork' : 'off' });
   serveStatic(req, res, url);
 });

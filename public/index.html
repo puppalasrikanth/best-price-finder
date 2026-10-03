@@ -17,12 +17,13 @@
       </a>
       <form id="searchForm" class="search" role="search" autocomplete="off">
         <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        <input id="q" name="q" type="search" placeholder="Search a product, e.g. “AirPods Pro 2”" aria-label="Product to search" minlength="2" maxlength="120" required>
+        <input id="q" name="q" type="search" placeholder="Search a product, e.g. “AirPods Pro 2”" aria-label="Product to search" minlength="2" maxlength="120" required role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggest" autocomplete="off" spellcheck="false">
         <div class="scope" role="radiogroup" aria-label="Where to search">
           <button type="button" role="radio" data-scope="stores" aria-checked="true" title="Search major US retailers">Stores</button>
           <button type="button" role="radio" data-scope="web" aria-checked="false" title="Search the whole web">Web</button>
         </div>
         <button type="submit" id="searchBtn" class="search-btn">Compare</button>
+        <div id="suggest" class="suggest" role="listbox" aria-label="Product suggestions" hidden></div>
       </form>
       <span id="modePill" class="pill" hidden></span>
     </div>

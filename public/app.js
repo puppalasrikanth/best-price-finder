@@ -92,7 +92,139 @@
     document.querySelectorAll('[data-tview]').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
     renderTrend();
   }));
-  form.addEventListener('submit', (e) => { e.preventDefault(); const q = input.value.trim(); if (q.length >= 2) search(q); });
+  form.addEventListener('submit', (e) => { e.preventDefault(); closeSuggest(); const q = input.value.trim(); if (q.length >= 2) search(q); });
+
+  // ---------- type-ahead (Tavily product suggestions) ----------
+  const sugEl = $('#suggest');
+  const sugCache = new Map(); // lowercased query -> suggestions
+  let sugItems = [];
+  let sugActive = -1;
+  let sugTimer = null;
+  let sugCtrl = null;
+  let sugQuery = '';
+  let sugLoading = false;
+
+  const sugNorm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const sugMatch = (name, q) => {
+    const n = ` ${sugNorm(name)} `;
+    const flat = n.replace(/ /g, '');
+    return sugNorm(q).split(' ').filter(Boolean).every((w) => n.includes(` ${w}`) || flat.includes(w));
+  };
+  const highlight = (name, q) => {
+    let html = esc(name);
+    for (const w of sugNorm(q).split(' ').filter((x) => x.length > 1).sort((a, b) => b.length - a.length)) {
+      html = html.replace(new RegExp(`(${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'ig'), '<mark>$1</mark>');
+    }
+    return html;
+  };
+
+  function closeSuggest() {
+    sugEl.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    sugActive = -1;
+    clearTimeout(sugTimer);
+    if (sugCtrl) sugCtrl.abort();
+  }
+
+  function renderSuggest() {
+    const q = input.value.trim();
+    const recentMatches = recent.get().filter((r) => !q || sugMatch(r, q)).slice(0, q ? 3 : 5);
+    const items = [];
+    if (q.length >= 2) items.push({ kind: 'search', name: q });
+    for (const r of recentMatches) if (r.toLowerCase() !== q.toLowerCase()) items.push({ kind: 'recent', name: r });
+    for (const sgi of sugItems) if (!items.some((i) => i.name.toLowerCase() === sgi.name.toLowerCase())) items.push({ kind: 'product', ...sgi });
+    if (!items.length && !sugLoading) { closeSuggest(); return; }
+    sugEl._items = items;
+    if (sugActive >= items.length) sugActive = items.length - 1;
+    let html = '';
+    let headerDone = false;
+    items.forEach((it, i) => {
+      if (it.kind === 'product' && !headerDone) {
+        headerDone = true;
+        html += `<div class="sg-head">Products at US stores<span class="src">via Tavily</span></div>`;
+      }
+      const thumb = it.kind === 'product'
+        ? `<span class="sg-thumb">${it.image ? `<img src="${esc(it.image)}" alt="" referrerpolicy="no-referrer" onerror="this.outerHTML=window.__ph">` : PLACEHOLDER}</span>`
+        : `<span class="sg-thumb ic">${it.kind === 'recent' ? '↺' : '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'}</span>`;
+      const label = it.kind === 'search' ? `Search for “<mark>${esc(it.name)}</mark>”` : highlight(it.name, q);
+      const side = it.kind === 'product' ? esc(it.store) : it.kind === 'recent' ? 'Recent' : '';
+      html += `<div class="sg-opt" role="option" id="sg-${i}" data-i="${i}" aria-selected="${i === sugActive}"><span>${thumb}</span><span class="sg-name">${label}</span><span class="sg-store">${side}</span></div>`;
+    });
+    if (sugLoading) html += `<div class="sg-head"><span class="spinner"></span>Looking up products with Tavily…</div>`;
+    else if (q.length >= 3 && !sugItems.length && sugQuery === q.toLowerCase()) html += '<div class="sg-empty">No matching products found — press Enter to search anyway.</div>';
+    html += '<div class="sg-foot"><kbd>↑</kbd> <kbd>↓</kbd> to choose · <kbd>Enter</kbd> to compare prices · <kbd>Esc</kbd> to close</div>';
+    sugEl.innerHTML = html;
+    sugEl.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    if (sugActive >= 0) input.setAttribute('aria-activedescendant', `sg-${sugActive}`);
+    else input.removeAttribute('aria-activedescendant');
+  }
+
+  async function fetchSuggest(q) {
+    const key = q.toLowerCase();
+    if (sugCache.has(key)) { sugItems = sugCache.get(key); sugQuery = key; sugLoading = false; renderSuggest(); return; }
+    // Reuse a shorter query's results while the user keeps typing (saves Tavily credits).
+    for (let k = key.length - 1; k >= 3; k--) {
+      const prev = sugCache.get(key.slice(0, k));
+      if (prev) {
+        const still = prev.filter((x) => sugMatch(x.name, q));
+        if (still.length >= 3) { sugItems = still; sugQuery = key; sugLoading = false; renderSuggest(); return; }
+        sugItems = still;
+        break;
+      }
+    }
+    if (sugCtrl) sugCtrl.abort();
+    sugCtrl = new AbortController();
+    sugLoading = true;
+    renderSuggest();
+    try {
+      const r = await fetch('/api/suggest?' + new URLSearchParams({ q }), { signal: sugCtrl.signal });
+      const j = await r.json();
+      if (!j.error) sugCache.set(key, j.suggestions || []);
+      if (input.value.trim().toLowerCase() !== key) return;
+      sugItems = j.suggestions || [];
+      sugQuery = key;
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+    }
+    sugLoading = false;
+    if (document.activeElement === input) renderSuggest();
+  }
+
+  function chooseSuggestion(i) {
+    const it = (sugEl._items || [])[i];
+    if (!it) return;
+    input.value = it.name;
+    closeSuggest();
+    search(it.name);
+  }
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    sugActive = -1;
+    clearTimeout(sugTimer);
+    if (q.length < 3) { sugItems = []; sugLoading = false; renderSuggest(); return; }
+    sugLoading = !sugCache.has(q.toLowerCase());
+    renderSuggest();
+    sugTimer = setTimeout(() => fetchSuggest(q), 350);
+  });
+  input.addEventListener('focus', () => { if (!btn.disabled || input.value.trim().length < 3) renderSuggest(); });
+  input.addEventListener('blur', () => setTimeout(closeSuggest, 120));
+  input.addEventListener('keydown', (e) => {
+    if (sugEl.hidden) { if (e.key === 'ArrowDown') { renderSuggest(); e.preventDefault(); } return; }
+    const n = (sugEl._items || []).length;
+    if (e.key === 'ArrowDown') { sugActive = (sugActive + 1) % n; renderSuggest(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { sugActive = sugActive <= 0 ? n - 1 : sugActive - 1; renderSuggest(); e.preventDefault(); }
+    else if (e.key === 'Escape') { closeSuggest(); e.preventDefault(); }
+    else if (e.key === 'Enter' && sugActive >= 0) { e.preventDefault(); chooseSuggestion(sugActive); }
+  });
+  sugEl.addEventListener('mousedown', (e) => {
+    const opt = e.target.closest('.sg-opt');
+    if (!opt) return;
+    e.preventDefault();
+    chooseSuggestion(Number(opt.dataset.i));
+  });
   [newOnly, verifiedOnly, sortSel].forEach((c) => c.addEventListener('change', renderOffers));
   progressToggle.addEventListener('click', () => {
     const open = progressDetails.hidden;

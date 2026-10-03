@@ -8,6 +8,6 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test test/extract.test.js test/zoowork.test.js test/trend.test.js"
+    "test": "node --test test/extract.test.js test/zoowork.test.js test/trend.test.js test/suggest.test.js"
   }
 }

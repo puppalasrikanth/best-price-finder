@@ -22,7 +22,8 @@ Each new search uses 2 Tavily credits (`SEARCH_DEPTH=advanced`), or 1 credit wit
 
 ## How it works
 
-0. Two requests run in parallel: `/api/search` (store prices) and `/api/trend` (price history), each streamed as Server-Sent Events.
+0. **Type-ahead**: after 3+ characters and a short pause, `/api/suggest` asks Tavily (fast search mode, US retailers) for matching products and shows clean product names with images. Results are cached for `SUGGEST_CACHE_HOURS` (default 24) on the server, and the browser reuses earlier results while the shopper keeps typing, so most keystrokes cost nothing. Set `SUGGESTIONS=off` to disable.
+1. Two requests run in parallel: `/api/search` (store prices) and `/api/trend` (price history), each streamed as Server-Sent Events.
 1. **Tavily** searches the retailer list and returns candidate pages (2 credits).
 2. **Parser** reads snippet prices so preliminary results appear within seconds.
 3. **ZooWork** reuses one agent (`pricescout-price-verifier`, id cached in `.zoowork-agent.json`), opens a session per search, visits up to `ZOOWORK_MAX_PAGES` store pages and returns verified prices. If ZooWork fails or times out, the page falls back to unverified prices with a warning.
