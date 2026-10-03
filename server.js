@@ -4,7 +4,6 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { runSearch } = require('./lib/pipeline');
-const { fetchTrend, analyzeTrend } = require('./lib/trend');
 const { fetchSuggestions, buildSuggestions } = require('./lib/suggest');
 const { buildOffers } = require('./lib/extract');
 const { Store } = require('./lib/store');
@@ -29,7 +28,6 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const DEMO = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'demo.json'), 'utf8'));
 
 const SUGGEST_ENABLED = process.env.SUGGESTIONS !== 'off';
-const DEMO_TREND = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'trend-demo.json'), 'utf8'));
 
 // Freshness windows. "Fresh" results are served straight from Moss; "stale" ones are shown
 // instantly as a preview while live data refreshes in the background.
@@ -37,8 +35,6 @@ const HOUR = 3600_000;
 const TTL = {
   searchFresh: (Number(process.env.CACHE_MINUTES) || 30) * 60_000,
   searchStale: (Number(process.env.SEARCH_STALE_HOURS) || 48) * HOUR,
-  trendFresh: (Number(process.env.TREND_CACHE_HOURS) || 12) * HOUR,
-  trendStale: (Number(process.env.TREND_STALE_DAYS) || 14) * 24 * HOUR,
   suggest: (Number(process.env.SUGGEST_CACHE_HOURS) || 168) * HOUR,
 };
 
@@ -48,7 +44,9 @@ const store = new Store({
   indexName: process.env.MOSS_INDEX || 'pricescout-cache',
   cacheDir: path.join(__dirname, '.cache'),
 });
-const trendInflight = new Map(); // query -> Promise<raw>
+const { offerId } = require('./lib/pipeline');
+const crypto = require('crypto');
+const IMG_DIR = path.join(__dirname, '.cache', 'img');
 
 function ago(ms) {
   const m = Math.round(ms / 60000);
@@ -60,7 +58,7 @@ function ago(ms) {
 }
 function hitDetail(hit) {
   const what = hit.match === 'semantic' ? `similar search “${hit.matchedQuery}”` : 'this search';
-  return `Moss: saved results for ${what} from ${ago(hit.ageMs)} · looked up in ${hit.tookMs} ms`;
+  return `Saved results for ${what} from ${ago(hit.ageMs)} · ${hit.tookMs} ms`;
 }
 
 const MIME = {
@@ -113,28 +111,31 @@ async function handleSearch(req, res, url) {
     console.log(`[search] "${q}" served from ${hit.match} (${hit.tookMs} ms)`);
     step('moss', 'done', hitDetail(hit));
     for (const sys of ['tavily', 'parser', 'zoowork']) step(sys, 'done', `Loaded from Moss · saved ${ago(hit.ageMs)}`);
+    for (const o of hit.payload.offers || []) { if (!o.id) o.id = offerId(o.url); if (o.verified) o.check = 'cached'; }
     send('final', { ...hit.payload, query: q, cached: true, cache: { ageMs: hit.ageMs, match: hit.match, matchedQuery: hit.matchedQuery, tookMs: hit.tookMs } });
     return end();
   }
   if (hit) {
     step('moss', 'done', `${hitDetail(hit)} — showing them while refreshing live`);
-    send('preliminary', { ...hit.payload, query: q, stale: true, cache: { ageMs: hit.ageMs, match: hit.match, matchedQuery: hit.matchedQuery, tookMs: hit.tookMs } });
+    for (const o of hit.payload.offers || []) { if (!o.id) o.id = offerId(o.url); if (o.verified) o.check = 'cached'; }
+    send('preliminary', { ...hit.payload, query: q, stale: true, verification: 'pending', cache: { ageMs: hit.ageMs, match: hit.match, matchedQuery: hit.matchedQuery, tookMs: hit.tookMs } });
   } else {
-    step('moss', 'done', store.enabled ? 'Moss: nothing saved yet for this product — searching live' : `Saved results unavailable (${store.reason || store.status})`);
+    step('moss', 'running', store.enabled ? 'Nothing saved for this product yet — searching live' : `Moss unavailable (${store.reason || store.status}) — using memory only`);
   }
 
   const started = Date.now();
   console.log(`[search] "${q}" (${scope}) started${hit ? ' (stale preview sent)' : ''}`);
   try {
     const result = await runSearch({
-      query: q, scope, tavilyKey: API_KEY, zooworkKey: ZOOWORK_KEY, depth: DEPTH,
+      query: q, scope, tavilyKey: API_KEY, zooworkKey: ZOOWORK_KEY, depth: DEPTH, store,
       emit: (ev) => {
         if (ev.type === 'step') {
-          console.log(`  [${ev.system}] ${ev.status}: ${ev.detail}`);
+          if (ev.system !== 'store') console.log(`  [${ev.system}] ${ev.status}: ${ev.detail}`);
           send('step', ev);
-        } else if (ev.type === 'preliminary' && !hit) {
-          // With a saved preview on screen, skip the unverified snippet prices.
+        } else if (ev.type === 'preliminary') {
           send('preliminary', { mode: 'live', query: q, scope, offers: ev.offers, summary: ev.summary, verification: ZOOWORK_KEY ? 'pending' : 'off', fetchedAt: new Date().toISOString() });
+        } else if (ev.type === 'offer') {
+          send('offer', ev.offer);
         }
       },
     });
@@ -142,7 +143,6 @@ async function handleSearch(req, res, url) {
     if (result.verification !== 'failed' && result.offers.length) {
       const best = result.summary.bestNew || result.summary.bestAny;
       store.put('search', { key: q, query: q, scope, text: [q, best && best.title].filter(Boolean).join(' | '), payload: data });
-      step('moss', 'done', 'Saved to Moss for instant repeat searches');
     }
     console.log(`[search] "${q}" done: ${result.offers.length} offers, verification=${result.verification}, ${data.tookMs} ms`);
     send('final', { ...data, cached: false });
@@ -183,69 +183,52 @@ async function handleSuggest(req, res, url) {
   }
 }
 
-// 6-month price history (ZooWork agent) + 30-day projection, persisted in Moss, streamed as SSE.
-async function handleTrend(req, res, url) {
-  const q = (url.searchParams.get('q') || '').trim().replace(/\s+/g, ' ');
-  const price = Number(url.searchParams.get('price')) || null;
-  const { send, end } = openStream(req, res);
-  const step = (status, detail) => send('step', { system: 'trend', status, detail });
-  if (q.length < 2 || q.length > 120) { send('error', { error: 'Enter a product name.' }); return end(); }
-
-  if (!LIVE) {
-    step('done', 'Demo mode — sample price history');
-    send('final', { query: q, demo: true, trend: analyzeTrend(DEMO_TREND, { currentPrice: price }) });
-    return end();
-  }
-
-  const hit = await store.get('trend', { key: q, query: q, maxAgeMs: TTL.trendStale, semantic: true });
-  const cacheInfo = hit && { ageMs: hit.ageMs, match: hit.match, matchedQuery: hit.matchedQuery, tookMs: hit.tookMs };
-  if (hit && (hit.ageMs < TTL.trendFresh || !ZOOWORK_KEY)) {
-    step('done', `Loaded from Moss · price history saved ${ago(hit.ageMs)} (${hit.tookMs} ms)`);
-    send('final', { query: q, trend: analyzeTrend(hit.payload, { currentPrice: price }), cache: cacheInfo });
-    return end();
-  }
-  if (!ZOOWORK_KEY) {
-    step('skipped', 'Add ZOOWORK_API_KEY to .env to see price trends');
-    send('final', { query: q, trend: { ok: false, reason: 'Price trends need a ZooWork API key.' } });
-    return end();
-  }
-  if (hit) {
-    step('running', `Showing price history saved ${ago(hit.ageMs)} (Moss) while ZooWork refreshes it…`);
-    send('preliminary', { query: q, trend: analyzeTrend(hit.payload, { currentPrice: price }), stale: true, cache: cacheInfo });
-  }
-
-  const key = q.toLowerCase();
+// Image streaming cache: product images are fetched once from the store CDN, kept on disk
+// (.cache/img) and served with long browser caching, so repeat views render instantly.
+const PRIVATE_HOST = /^(localhost|0\.|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|\[|.*\.local$|.*\.internal$)/i;
+const imgInflight = new Map();
+async function handleImage(req, res, url) {
+  const src = url.searchParams.get('u') || '';
+  let u;
+  try { u = new URL(src); } catch { res.writeHead(400); return res.end(); }
+  if (!/^https?:$/.test(u.protocol) || PRIVATE_HOST.test(u.hostname) || !u.hostname.includes('.')) { res.writeHead(400); return res.end(); }
+  const key = crypto.createHash('sha1').update(u.href).digest('hex');
+  const file = path.join(IMG_DIR, key);
+  const serve = (type, buf, hit) => {
+    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'public, max-age=604800, immutable', 'X-Image-Cache': hit ? 'hit' : 'miss' });
+    res.end(buf);
+  };
   try {
-    const t0 = Date.now();
-    let p = trendInflight.get(key);
+    const [buf, type] = await Promise.all([fs.promises.readFile(file), fs.promises.readFile(`${file}.type`, 'utf8')]);
+    return serve(type, buf, true);
+  } catch {}
+  try {
+    let p = imgInflight.get(key);
     if (!p) {
-      p = fetchTrend({
-        apiKey: ZOOWORK_KEY, query: q,
-        timeoutMs: Number(process.env.ZOOWORK_TREND_TIMEOUT_MS) || 300000,
-        emit: (status, detail) => { console.log(`  [trend] ${status}: ${detail}`); step(status, detail); },
-        onUrl: (host, status) => send('step', { system: 'trend-source', status, detail: host }),
-      });
-      trendInflight.set(key, p);
-      p.finally(() => trendInflight.delete(key)).catch(() => {});
-    } else {
-      step('running', 'Joining a price-history lookup already in progress…');
+      p = (async () => {
+        const r = await fetch(u.href, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36', Accept: 'image/avif,image/webp,image/*,*/*;q=0.8' },
+          signal: AbortSignal.timeout(8000),
+          redirect: 'follow',
+        });
+        const type = (r.headers.get('content-type') || '').split(';')[0];
+        if (!r.ok || !type.startsWith('image/') || type === 'image/svg+xml') throw new Error(`bad image ${r.status} ${type}`);
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.length > 5 * 1024 * 1024) throw new Error('image too large');
+        await fs.promises.mkdir(IMG_DIR, { recursive: true });
+        await fs.promises.writeFile(file, buf);
+        await fs.promises.writeFile(`${file}.type`, type);
+        return { buf, type };
+      })();
+      imgInflight.set(key, p);
+      p.finally(() => imgInflight.delete(key)).catch(() => {});
     }
-    const raw = await p;
-    const trend = analyzeTrend(raw, { currentPrice: price });
-    if (trend.ok) store.put('trend', { key: q, query: q, text: [q, trend.product].filter(Boolean).join(' | '), payload: raw });
-    step('done', `Price history gathered in ${Math.round((Date.now() - t0) / 1000)}s${trend.ok ? ' · saved to Moss' : ''}`);
-    send('final', { query: q, trend });
-  } catch (err) {
-    console.error(`[trend] "${q}" failed:`, err.message);
-    if (hit) {
-      step('error', `${err.message} — keeping the saved price history`);
-      send('final', { query: q, trend: analyzeTrend(hit.payload, { currentPrice: price }), stale: true, cache: cacheInfo });
-    } else {
-      step('error', err.message);
-      send('final', { query: q, trend: { ok: false, reason: err.message } });
-    }
+    const { buf, type } = await p;
+    serve(type, buf, false);
+  } catch {
+    res.writeHead(404, { 'Cache-Control': 'max-age=300' });
+    res.end();
   }
-  end();
 }
 
 function serveStatic(req, res, url) {
@@ -273,7 +256,7 @@ const server = http.createServer((req, res) => {
     return res.end();
   }
   if (url.pathname === '/api/search') return void handleSearch(req, res, url);
-  if (url.pathname === '/api/trend') return void handleTrend(req, res, url);
+  if (url.pathname === '/img') return void handleImage(req, res, url);
   if (url.pathname === '/api/suggest') return void handleSuggest(req, res, url);
   if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true, mode: LIVE ? 'live' : 'demo', depth: DEPTH, verification: ZOOWORK_KEY ? 'zoowork' : 'off', moss: store.info() });
   serveStatic(req, res, url);
@@ -281,7 +264,7 @@ const server = http.createServer((req, res) => {
 
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
-    console.log(`\n  Best Price Portal running at http://localhost:${PORT}`);
+    console.log(`\n  PriceScout — powered by ZooWork, Tavily and Moss\n  Running at http://localhost:${PORT}`);
     console.log(LIVE
       ? `  Mode: LIVE (Tavily ${DEPTH} search, ${DEPTH === 'advanced' ? 2 : 1} credit(s) per new search)\n`
       : '  Mode: DEMO — add your Tavily key to .env (TAVILY_API_KEY=tvly-...) and restart for live results\n');

@@ -1,12 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { parseVerdict, normalizeEvent } = require('../lib/zoowork');
-const { mergeVerdict, summarize } = require('../lib/pipeline');
+const { parseOfferCheck, normalizeEvent, buildOfferPrompt, roleFor } = require('../lib/zoowork');
+const { applyCheck, summarize, runPool, offerId } = require('../lib/pipeline');
 
-test('parses the agent JSON block even with prose around it', () => {
-  const v = parseVerdict('Checked them.\n```json\n{"offers":[{"n":1,"verified":true,"price":99.5}]}\n```\nDone');
-  assert.strictEqual(v.offers[0].price, 99.5);
-  assert.strictEqual(parseVerdict('no json here'), null);
+test('parses the per-offer JSON block even with prose around it', () => {
+  const v = parseOfferCheck('Checked.\n```json\n{"verified":true,"price":99.5,"image_url":"https://x.com/a.jpg"}\n```\nDone');
+  assert.strictEqual(v.price, 99.5);
+  assert.strictEqual(parseOfferCheck('no json here'), null);
 });
 
 test('normalizes both event wire shapes', () => {
@@ -14,18 +14,33 @@ test('normalizes both event wire shapes', () => {
   assert.strictEqual(normalizeEvent({ seq: 3, eventType: 'agent.tool' }).type, 'agent.tool');
 });
 
-test('only verified, in-stock prices can win best price', () => {
-  const mk = (store, price) => ({ store, price, url: `https://${store}.com/p`, condition: 'new', score: 1 });
+test('prompt asks for one page, price and main image; pool slots get their own agents', () => {
+  const p = buildOfferPrompt('AirPods Pro 2', { url: 'https://www.bestbuy.com/x', store: 'Best Buy', title: 'AirPods Pro 2', price: 199 });
+  assert.match(p, /https:\/\/www\.bestbuy\.com\/x/);
+  assert.match(p, /image_url/);
+  assert.strictEqual(roleFor('verify').label, 'pricescout');
+  assert.strictEqual(roleFor('verify-2').label, 'pricescout-verify-2');
+});
+
+test('a confirmation updates price, image and stock; only confirmed in-stock offers can win', () => {
+  const mk = (store, price) => ({ store, price, url: `https://${store}.com/p`, condition: 'new', score: 1, image: 'https://cdn/old.jpg' });
   const offers = [mk('a', 100), mk('b', 150), mk('c', 200)];
-  mergeVerdict(offers, { offers: [
-    { n: 1, verified: false, note: 'blocked' },
-    { n: 2, verified: true, price: '$180.00', condition: 'new', in_stock: false },
-    { n: 3, verified: true, price: 210, was_price: 250, condition: 'new', in_stock: true },
-  ] });
+  applyCheck(offers[0], { verified: false, note: 'blocked' });
+  applyCheck(offers[1], { verified: true, price: '$180.00', condition: 'new', in_stock: false, image_url: 'https://cdn/b.jpg' });
+  applyCheck(offers[2], { verified: true, price: 210, was_price: 250, condition: 'new', in_stock: true, image_url: 'https://cdn/sprite-logo.png' });
+  assert.strictEqual(offers[1].price, 180);
+  assert.strictEqual(offers[1].snippetPrice, 150);
+  assert.strictEqual(offers[1].image, 'https://cdn/b.jpg');
+  assert.strictEqual(offers[2].image, 'https://cdn/old.jpg', 'logo/sprite images are rejected');
   const s = summarize(offers, { verifiedOnly: true });
   assert.strictEqual(s.bestNew.store, 'c');
-  assert.strictEqual(s.bestNew.price, 210);
   assert.strictEqual(s.bestNew.wasPrice, 250);
-  assert.strictEqual(offers.find((o) => o.store === 'b').price, 180);
   assert.strictEqual(s.verifiedCount, 2);
+});
+
+test('runs checks in parallel up to the pool size', async () => {
+  let active = 0, peak = 0;
+  await runPool([1, 2, 3, 4, 5, 6, 7], 3, async () => { active++; peak = Math.max(peak, active); await new Promise((r) => setTimeout(r, 10)); active--; });
+  assert.strictEqual(peak, 3);
+  assert.strictEqual(offerId('https://a.com/x'), offerId('https://a.com/x#frag'));
 });

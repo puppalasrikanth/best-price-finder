@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PriceScout — Best Price Finder</title>
-  <meta name="description" content="Search any product, compare verified prices across US stores, and see where the price is heading.">
+  <meta name="description" content="PriceScout finds the best price on any product. Powered by ZooWork, Tavily and Moss.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -13,7 +13,7 @@
     <div class="topbar-inner">
       <a class="brand" href="/" aria-label="PriceScout home">
         <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M9 17.5 15.5 11H23v7.5L16.5 25 9 17.5Z" fill="none" stroke="var(--on-accent)" stroke-width="2.2" stroke-linejoin="round"/><circle cx="19.3" cy="14.7" r="1.7" fill="var(--on-accent)"/></svg>
-        <span>PriceScout</span>
+        <span class="brand-text"><span class="brand-name">PriceScout</span><span class="brand-tag">Powered by ZooWork, Tavily &amp; Moss</span></span>
       </a>
       <form id="searchForm" class="search" role="search" autocomplete="off">
         <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -32,14 +32,15 @@
   <main>
     <!-- Landing -->
     <section class="landing" id="landing">
-      <p class="kicker">Smarter shopping, verified</p>
+      <p class="kicker">PriceScout · Every price, confirmed.</p>
       <h1>Know you’re paying the best price.</h1>
-      <p class="sub">PriceScout searches major US stores, has an AI agent confirm each price on the store’s own page, and shows where the price is heading.</p>
+      <p class="sub">Pick a product and see prices and photos from major US stores in seconds — then watch AI agents confirm each one on the store’s own page.</p>
+      <p class="powered">Powered by <strong>ZooWork</strong> · <strong>Tavily</strong> · <strong>Moss</strong></p>
       <div id="chips" class="chips" aria-label="Try a search"></div>
       <ol class="how">
-        <li><span class="how-n">1</span><div><strong>Search stores</strong><p>Tavily scans Amazon, Walmart, Best Buy, Target, Costco and 20+ more.</p></div></li>
-        <li><span class="how-n">2</span><div><strong>Verify every price</strong><p>A ZooWork agent opens each store page and confirms price, condition and stock.</p></div></li>
-        <li><span class="how-n">3</span><div><strong>Buy now or wait?</strong><p>See 6 months of price history and a 30-day forecast before you buy.</p></div></li>
+        <li><span class="how-n">1</span><div><strong>Instant results</strong><p>Tavily finds the product at Amazon, Walmart, Best Buy, Target, Costco and 20+ more — with photos and prices.</p></div></li>
+        <li><span class="how-n">2</span><div><strong>Every store confirmed</strong><p>ZooWork agents open each store page in parallel and confirm the price, photo and stock, live on screen.</p></div></li>
+        <li><span class="how-n">3</span><div><strong>Faster every time</strong><p>Moss remembers every confirmed price and photo, so repeat searches load almost instantly.</p></div></li>
       </ol>
     </section>
 
@@ -64,18 +65,14 @@
     <section id="results" class="results" hidden>
       <div class="overview">
         <article id="productCard" class="panel product"></article>
-        <article id="trendCard" class="panel trend">
+        <article id="checkCard" class="panel check">
           <header class="panel-head">
             <div>
-              <h2>Price history &amp; forecast</h2>
-              <p id="trendSub" class="panel-sub">Last 6 months and the next 30 days</p>
-            </div>
-            <div class="seg small" role="tablist" aria-label="Trend view">
-              <button type="button" role="tab" aria-selected="true" data-tview="chart">Chart</button>
-              <button type="button" role="tab" aria-selected="false" data-tview="table">Table</button>
+              <h2>Live store check</h2>
+              <p id="checkSub" class="panel-sub">ZooWork agents confirm each price and photo on the store’s own page</p>
             </div>
           </header>
-          <div id="trendBody" class="trend-body"></div>
+          <div id="checkBody" class="check-body"></div>
         </article>
       </div>
 
@@ -109,12 +106,10 @@
   </main>
 
   <footer class="foot">
-    <p>Prices and forecasts can change quickly. Always confirm the final price, shipping and seller at the store. Forecasts are estimates, not guarantees.</p>
-    <p>Search by Tavily · price checks and price history by ZooWork agents.</p>
+    <p><strong>PriceScout</strong> — every price, confirmed. Powered by <strong>ZooWork</strong> (store checks), <strong>Tavily</strong> (product search) and <strong>Moss</strong> (instant saved results).</p>
+    <p>Prices change quickly. Always confirm the final price, shipping and seller at the store.</p>
   </footer>
 
-  <div id="tooltip" class="tooltip" role="status" hidden></div>
-  <script src="/chart.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

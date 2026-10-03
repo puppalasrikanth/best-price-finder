@@ -1,6 +1,6 @@
-# PriceScout — Best Price Portal
+# PriceScout — every price, confirmed
 
-Search any product and compare prices across major US retailers (Amazon, Walmart, Target, Best Buy, eBay, Costco, B&H and more). Tavily finds the store pages, then a ZooWork agent opens each page to confirm the live price, condition and stock. Only verified prices can win "best price". A second ZooWork agent researches the last 6 months of price history, and PriceScout projects the next 30 days and tells shoppers whether to buy now or wait. A progress panel shows each system as it works.
+**Powered by ZooWork, Tavily and Moss.** Pick a product and PriceScout shows prices and photos from major US stores within seconds (Tavily), then ZooWork agents open each store page in parallel to confirm the price, photo and stock — updating each row live. Every confirmation and photo is saved (Moss + a local image cache), so repeat searches load almost instantly.
 
 ## Run it
 
@@ -32,23 +32,14 @@ Every Tavily and ZooWork result (store prices, verified offers, price history, s
 
 ## How it works
 
-0. **Type-ahead**: after 3+ characters and a short pause, `/api/suggest` asks Tavily (fast search mode, US retailers) for matching products and shows clean product names with images. Results are cached for `SUGGEST_CACHE_HOURS` (default 24) on the server, and the browser reuses earlier results while the shopper keeps typing, so most keystrokes cost nothing. Set `SUGGESTIONS=off` to disable.
-1. Two requests run in parallel: `/api/search` (store prices) and `/api/trend` (price history), each streamed as Server-Sent Events.
-1. **Tavily** searches the retailer list and returns candidate pages (2 credits).
-2. **Parser** reads snippet prices so preliminary results appear within seconds.
-3. **ZooWork** reuses one agent (`pricescout-price-verifier`, id cached in `.zoowork-agent.json`), opens a session per search, visits up to `ZOOWORK_MAX_PAGES` store pages and returns verified prices. If ZooWork fails or times out, the page falls back to unverified prices with a warning.
-4. **Trend**: a separate ZooWork agent (`pricescout-trend-analyst`) gathers monthly typical and lowest prices for the last 6 full months, upcoming sale events and sources. `lib/trend.js` drops outliers and projects 30 days ahead: weighted 6-month trend (damped, capped at ±8 %) + expected sale events weighted by confidence, with a band from the typical monthly swing (min ±3 %). Results are cached for `TREND_CACHE_HOURS` (default 12).
-5. **Verdict**: great time to buy (at/near the 6-month low), consider waiting (forecast ≥5 % lower), good price (below the 6-month average) or above the usual price.
+1. **Type-ahead** (`/api/suggest`): after 3+ characters Tavily suggests matching products; saved in Moss.
+2. **Instant results** (`/api/search`, Server-Sent Events): Tavily returns store pages with images and prices; the parser cleans them and the page renders immediately (`preliminary` event).
+3. **Saved confirmations**: each store page's last confirmation is looked up in Moss (`OFFER_CACHE_HOURS`, default 6) and applied instantly — those pages are not re-checked.
+4. **Live confirmation**: every remaining page (up to `ZOOWORK_MAX_PAGES`) gets its own ZooWork session, run on a pool of `ZOOWORK_CONCURRENCY` agents (default 3) in parallel. Each agent confirms price, main product photo, condition and stock; the page updates that row as each one finishes (`offer` events). Only confirmed, in-stock prices can win best price.
+5. **Persist**: each confirmation is saved to Moss; the whole result is saved too, so the same search is instant for 30 minutes and shown as an instant preview for up to 48 hours while refreshing.
+6. **Images** stream through `/img`, which fetches each photo once from the store CDN, keeps it in `.cache/img` and serves it with a 7-day browser cache.
 
-
-- `server.js` serves the UI and `GET /api/search?q=...&scope=stores|web` as a Server-Sent Events stream (`step`, `preliminary`, `final`, `error`)
-- `lib/pipeline.js` runs Tavily → parser → ZooWork and merges the verified prices
-- `lib/zoowork.js` is the ZooWork Managed Agents client
-- `lib/tavily.js` calls the Tavily Search API (restricted to the retailer list in `lib/retailers.js` for "Major US stores")
-- `lib/extract.js` reads prices, was-prices, condition and the best image from each result. It skips savings, protection-plan and financing amounts, requires model numbers to match, and flags outlier or outdated prices so they don't count as the best price.
-- `public/` holds the web UI
-
-Prices come from search snippets, so they can lag behind the store. The UI tells shoppers to confirm at the store.
+Files: `server.js` (HTTP, SSE, image cache), `lib/pipeline.js` (Tavily → parser → Moss → ZooWork pool), `lib/zoowork.js` (ZooWork client), `lib/store.js` (Moss), `lib/extract.js` (price parsing), `lib/suggest.js`, `public/`.
 
 ## Tests
 

@@ -9,15 +9,14 @@
   const chipsEl = $('#chips');
   const modePill = $('#modePill');
   const productCard = $('#productCard');
-  const trendBody = $('#trendBody');
-  const trendSub = $('#trendSub');
+  const checkBody = $('#checkBody');
+  const checkSub = $('#checkSub');
   const offersEl = $('#offers');
   const compareTitle = $('#compareTitle');
   const compareSub = $('#compareSub');
   const newOnly = $('#newOnly');
   const verifiedOnly = $('#verifiedOnly');
   const sortSel = $('#sort');
-  const tooltip = $('#tooltip');
   const progressEl = $('#progress');
   const stepper = $('#stepper');
   const progressNow = $('#progressNow');
@@ -30,33 +29,30 @@
   const SUGGESTIONS = ['AirPods Pro 2', 'Sony WH-1000XM5', 'Nintendo Switch 2', 'Dyson V15 Detect', 'Kindle Paperwhite', 'Instant Pot Duo 6qt'];
   const PLACEHOLDER = '<svg class="ph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm1 2v8.6l3.3-3.3a1 1 0 0 1 1.4 0l2.3 2.3 3.3-3.3a1 1 0 0 1 1.4 0L19 13.6V7H5Zm4 2.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/></svg>';
   const COND = { new: 'New', used: 'Used', refurbished: 'Refurbished', 'open-box': 'Open box', mixed: 'New & refurb' };
-  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const STEPS = [
-    { key: 'tavily', name: 'Search stores', sub: 'Tavily' },
-    { key: 'parser', name: 'Read prices', sub: 'From search results' },
-    { key: 'zoowork', name: 'Verify prices', sub: 'ZooWork agent' },
-    { key: 'trend', name: 'Price trend', sub: 'ZooWork agent' },
+    { key: 'tavily', name: 'Find products', sub: 'Tavily' },
+    { key: 'parser', name: 'Show prices & photos', sub: 'Instantly' },
+    { key: 'zoowork', name: 'Confirm each store', sub: 'ZooWork agents' },
+    { key: 'moss', name: 'Save for next time', sub: 'Moss' },
   ];
 
   let scope = 'stores';
-  let data = null; // search result
+  let data = null; // current search result (offers update live)
   let searchError = null;
-  let trend = null; // { state: 'loading'|'done'|'error', data }
   let view = 'list';
-  let tview = 'chart';
-  let streams = [];
-  let openStreams = 0;
+  let stream = null;
   let t0 = 0;
   let timer = null;
+  const flashed = new Map(); // offer id -> time it last changed
 
   const money = (n) => (n == null ? '—' : n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }));
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const discount = (o) => (o.wasPrice && o.price ? Math.round((1 - o.price / o.wasPrice) * 100) : 0);
-  const fmtDay = (iso) => { const d = new Date(`${iso}T12:00:00`); return `${MONTHS[d.getMonth()]} ${d.getDate()}`; };
   const agoText = (ms) => { const m = Math.round(ms / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; };
-  const fmtMonth = (m) => `${MONTHS[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}`;
   window.__ph = PLACEHOLDER;
-  const imgHtml = (src, alt) => (src ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.outerHTML=window.__ph">` : PLACEHOLDER);
+  // Images stream through the server's on-disk cache (/img), so repeat views are instant.
+  const imgSrc = (src) => (src ? `/img?u=${encodeURIComponent(src)}` : '');
+  const imgHtml = (src, alt) => (src ? `<img src="${esc(imgSrc(src))}" alt="${esc(alt)}" loading="lazy" decoding="async" onerror="this.outerHTML=window.__ph">` : PLACEHOLDER);
 
   // ---------- recent searches (per-browser convenience) ----------
   const recent = {
@@ -86,12 +82,7 @@
   document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => {
     view = b.dataset.view;
     document.querySelectorAll('[data-view]').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
-    renderOffers();
-  }));
-  document.querySelectorAll('[data-tview]').forEach((b) => b.addEventListener('click', () => {
-    tview = b.dataset.tview;
-    document.querySelectorAll('[data-tview]').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
-    renderTrend();
+    if (data) renderOffers(summarize());
   }));
   form.addEventListener('submit', (e) => { e.preventDefault(); closeSuggest(); const q = input.value.trim(); if (q.length >= 2) search(q); });
 
@@ -226,15 +217,18 @@
     e.preventDefault();
     chooseSuggestion(Number(opt.dataset.i));
   });
-  [newOnly, verifiedOnly, sortSel].forEach((c) => c.addEventListener('change', renderOffers));
   progressToggle.addEventListener('click', () => {
     const open = progressDetails.hidden;
     progressDetails.hidden = !open;
     progressToggle.setAttribute('aria-expanded', String(open));
     progressToggle.textContent = open ? 'Hide details' : 'Details';
   });
-  let resizeT;
-  window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(renderTrend, 120); });
+  progressToggle.addEventListener('click', () => {
+    const open = progressDetails.hidden;
+    progressDetails.hidden = !open;
+    progressToggle.setAttribute('aria-expanded', String(open));
+    progressToggle.textContent = open ? 'Hide details' : 'Details';
+  });
 
   function showBanner(html, kind = '') { banner.className = 'banner ' + kind; banner.innerHTML = html; banner.hidden = false; }
   function setMode(mode) {
@@ -260,77 +254,52 @@
   }
   function log(sys, status, detail) {
     const li = document.createElement('li');
-    li.innerHTML = `<span class="t">${Math.round((Date.now() - t0) / 1000)}s</span><span class="s">${esc(sys)}</span>${esc(status)} · ${esc(detail)}`;
+    li.innerHTML = `<span class="t">${((Date.now() - t0) / 1000).toFixed(1)}s</span><span class="s">${esc(sys)}</span>${esc(status)} · ${esc(detail)}`;
     progressLog.appendChild(li);
     progressDetails.scrollTop = progressDetails.scrollHeight;
   }
   function onStep(ev) {
-    if (ev.system === 'moss') {
-      let chip = sites.get('moss');
-      if (!chip) {
-        chip = document.createElement('span');
-        chip.className = 'site moss';
-        progressNow.prepend(chip);
-        sites.set('moss', chip);
-      }
-      chip.textContent = `⚡ ${ev.detail}`;
-      chip.dataset.status = 'done';
-      log('moss', ev.status, ev.detail);
-      return;
-    }
-    if (ev.system === 'store' || ev.system === 'trend-source') {
-      const key = `${ev.system}:${ev.detail}`;
-      let chip = sites.get(key);
+    if (ev.system === 'store') {
+      let chip = sites.get(ev.detail);
       if (!chip) {
         chip = document.createElement('span');
         chip.className = 'site';
-        chip.textContent = (ev.system === 'trend-source' ? '📈 ' : '') + ev.detail;
-        chip.title = ev.system === 'trend-source' ? 'Price-history source' : 'Store page being verified';
+        chip.textContent = ev.detail;
+        chip.title = 'Store page a ZooWork agent is opening';
         progressNow.appendChild(chip);
-        sites.set(key, chip);
+        sites.set(ev.detail, chip);
       }
       chip.dataset.status = ev.status;
-      log(ev.system === 'store' ? 'verify' : 'trend', ev.status, ev.detail);
+      log('zoowork', ev.status, ev.detail);
       return;
     }
-    const sysKey = ev.system === 'cache' ? 'tavily' : ev.system;
-    const li = stepper.querySelector(`[data-step="${sysKey}"]`);
+    const li = stepper.querySelector(`[data-step="${ev.system}"]`);
     if (li) {
       li.dataset.status = ev.status;
       li.querySelector('.dt').textContent = ev.detail || '';
       li.title = ev.detail || '';
     }
-    if (ev.system === 'cache') {
-      for (const k of ['parser', 'zoowork']) {
-        const s = stepper.querySelector(`[data-step="${k}"]`);
-        if (s && s.dataset.status === 'pending') { s.dataset.status = 'done'; s.querySelector('.dt').textContent = 'From cache'; }
-      }
-    }
     log(ev.system, ev.status, ev.detail);
   }
-  function streamDone() {
-    openStreams -= 1;
-    if (openStreams > 0) return;
+  function endProgress(ok) {
     clearInterval(timer);
     progressEl.classList.add('is-done');
     btn.disabled = false; btn.textContent = 'Compare';
-    progressTitle.textContent = `Done in ${Math.round((Date.now() - t0) / 1000)}s`;
-    for (const li of stepper.querySelectorAll('[data-status="pending"],[data-status="running"]')) li.dataset.status = 'skipped';
+    progressTitle.textContent = ok ? `Done in ${((Date.now() - t0) / 1000).toFixed(1)}s` : 'Search stopped';
+    for (const li of stepper.querySelectorAll('[data-status="pending"],[data-status="running"]')) li.dataset.status = ok ? 'done' : 'skipped';
     for (const chip of sites.values()) if (chip.dataset.status === 'running') chip.dataset.status = 'done';
   }
 
   // ---------- search ----------
-  function closeStreams() { streams.forEach((s) => s.close()); streams = []; openStreams = 0; }
-
   function search(q) {
-    closeStreams();
+    if (stream) stream.close();
     document.body.classList.add('has-results');
     btn.disabled = true; btn.textContent = 'Searching…';
     banner.hidden = true;
     empty.hidden = true;
     data = null;
     searchError = null;
-    trend = { state: 'loading' };
+    flashed.clear();
     results.hidden = false;
     resetProgress();
     renderAll();
@@ -338,249 +307,234 @@
     history.replaceState(null, '', '?' + params);
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
-    // 1) store prices (Tavily → parser → ZooWork verification)
     const es = new EventSource('/api/search?' + params);
-    streams.push(es); openStreams += 1;
+    stream = es;
     let finished = false;
-    const finish = () => { if (finished) return; finished = true; es.close(); streamDone(); };
+    const finish = (ok) => { if (finished) return; finished = true; es.close(); if (stream === es) stream = null; endProgress(ok); renderAll(); };
     es.addEventListener('step', (e) => onStep(JSON.parse(e.data)));
-    es.addEventListener('preliminary', (e) => { data = JSON.parse(e.data); setMode(data.mode); renderAll(); });
-    es.addEventListener('final', (e) => {
+    es.addEventListener('preliminary', (e) => {
       data = JSON.parse(e.data);
+      setMode(data.mode);
+      renderAll();
+    });
+    es.addEventListener('offer', (e) => {
+      if (!data) return;
+      const o = JSON.parse(e.data);
+      const i = data.offers.findIndex((x) => x.id === o.id);
+      if (i >= 0) data.offers[i] = o; else data.offers.push(o);
+      flashed.set(o.id, Date.now());
+      renderAll();
+    });
+    es.addEventListener('final', (e) => {
+      const prev = data;
+      data = JSON.parse(e.data);
+      if (prev && prev.cache && !data.cache) data.refreshedFrom = prev.cache;
       recent.add(q);
       setMode(data.mode);
       if (data.mode === 'demo') {
         showBanner(`<strong>Demo mode.</strong> Showing sample results for “${esc(data.demoQuery)}”. Add <code>TAVILY_API_KEY</code> and <code>ZOOWORK_API_KEY</code> to <code>.env</code> and restart to search live.`);
       } else if (data.verification === 'failed') {
-        showBanner(`<strong>Prices not verified.</strong> ZooWork couldn’t check the store pages (${esc(data.verificationError || 'unknown error')}). Showing prices from search results — confirm at the store.`);
+        showBanner(`<strong>Prices not confirmed.</strong> ${esc(data.verificationError || 'ZooWork couldn’t check the store pages')}. Showing prices from search results — confirm at the store.`);
       }
-      renderAll();
-      finish();
+      finish(true);
     });
     es.addEventListener('error', (e) => {
       if (finished) return;
-      searchError = e.data ? JSON.parse(e.data).error : 'Lost connection to the server. Is it still running?';
-      showBanner(`<strong>Store search failed.</strong> ${esc(searchError)}`, 'error');
-      renderAll();
-      finish();
-    });
-
-    // 2) price trend (runs in parallel on its own ZooWork agent)
-    const ts = new EventSource('/api/trend?' + new URLSearchParams({ q }));
-    streams.push(ts); openStreams += 1;
-    let tFinished = false;
-    const tFinish = () => { if (tFinished) return; tFinished = true; ts.close(); streamDone(); };
-    ts.addEventListener('step', (e) => onStep(JSON.parse(e.data)));
-    ts.addEventListener('preliminary', (e) => {
-      const d = JSON.parse(e.data);
-      if (d.trend && d.trend.ok) { trend = { state: 'done', data: d.trend, stale: true, refreshing: true, cache: d.cache }; renderAll(); }
-    });
-    ts.addEventListener('final', (e) => {
-      const d = JSON.parse(e.data);
-      trend = d.trend && d.trend.ok
-        ? { state: 'done', data: d.trend, demo: d.demo, stale: !!d.stale, cache: d.cache }
-        : (trend && trend.state === 'done' ? { ...trend, refreshing: false } : { state: 'error', reason: (d.trend && d.trend.reason) || 'No price history found' });
-      renderAll();
-      tFinish();
-    });
-    ts.addEventListener('error', (e) => {
-      if (tFinished) return;
-      trend = { state: 'error', reason: e.data ? JSON.parse(e.data).error : 'Lost connection while loading the price trend' };
-      renderAll();
-      tFinish();
+      if (data) {
+        showBanner(e.data ? esc(JSON.parse(e.data).error) : 'Lost connection to the server before every store was checked.', 'error');
+      } else {
+        searchError = e.data ? JSON.parse(e.data).error : 'Lost connection to the server. Is it still running?';
+        showBanner(`<strong>Store search failed.</strong> ${esc(searchError)}`, 'error');
+      }
+      finish(false);
     });
   }
 
-  // ---------- buy-or-wait verdict ----------
-  function bestOffer() {
-    if (!data) return null;
-    return data.summary.bestNew || data.summary.bestAny || null;
+  // ---------- best price (recomputed as confirmations arrive) ----------
+  function summarize() {
+    const offers = data.offers;
+    const anyVerified = offers.some((o) => o.verified === true);
+    const ok = (o) => o.price != null && !o.suspect && !o.stale && o.inStock !== false && (!anyVerified || o.verified === true);
+    for (const o of offers) o.isBest = false;
+    const pool = offers.filter(ok);
+    const bestNew = pool.filter((o) => o.condition === 'new').sort((a, b) => a.price - b.price)[0] || null;
+    const best = bestNew || pool.slice().sort((a, b) => a.price - b.price)[0] || null;
+    if (best) best.isBest = true;
+    const checks = offers.filter((o) => o.check && o.check !== 'skipped');
+    const count = (k) => offers.filter((o) => o.check === k).length;
+    const prices = pool.map((o) => o.price);
+    return {
+      ok, anyVerified, best, isNew: !!bestNew,
+      low: prices.length ? Math.min(...prices) : null,
+      high: prices.length ? Math.max(...prices) : null,
+      stores: new Set(offers.map((o) => o.store)).size,
+      total: checks.length,
+      verified: count('verified'), cached: count('cached'), checking: count('checking'), queued: count('queued'), failed: count('failed'),
+      pending: count('checking') + count('queued'),
+    };
   }
-  function verdict() {
-    const b = bestOffer();
-    const t = trend && trend.state === 'done' ? trend.data : null;
-    if (!data && searchError) return { kind: 'neutral', title: 'Store prices unavailable', text: 'The store search failed — try again in a moment.' };
-    if (!data) return { kind: 'pending', title: 'Checking prices…', text: 'Comparing stores and looking up the price history.' };
-    if (!b) return { kind: 'neutral', title: 'No confirmed price yet', text: 'Open the stores below to check their current price.' };
-    const verifying = data.verification === 'pending';
-    if (!t) {
-      if (trend && trend.state === 'loading') return { kind: 'pending', title: verifying ? 'Verifying prices…' : 'Analyzing the price trend…', text: 'Buy-or-wait advice appears when the price history is ready.' };
-      const others = data.offers.filter((o) => o.price != null && o !== b && !o.suspect);
-      const med = others.length ? others.map((o) => o.price).sort((a, c) => a - c)[Math.floor(others.length / 2)] : null;
-      return med && med > b.price
-        ? { kind: 'good', title: 'Lowest price we found', text: `${money(med - b.price)} less than the typical store price (${money(med)}).` }
-        : { kind: 'neutral', title: 'Best available price', text: 'Price history isn’t available for this product.' };
-    }
-    if (verifying) return { kind: 'pending', title: 'Verifying prices…', text: 'Price history is ready — buy-or-wait advice appears once store prices are confirmed.' };
-    const p = b.price;
-    const { low6, avg6 } = t.stats;
-    const fc = t.projection;
-    const sale = t.events && t.events[0];
-    if (p <= low6 * 1.03) return { kind: 'good', title: 'Great time to buy', text: `At or below the 6-month low of ${money(low6)}${p < avg6 ? ` — ${Math.round((1 - p / avg6) * 100)}% under the 6-month average` : ''}.` };
-    if (fc.mid < p * 0.95) return { kind: 'warn', title: 'Consider waiting', text: `Expected around ${money(fc.mid)} by ${fmtDay(fc.date)}${sale ? ` (${sale.name} starts ${fmtDay(sale.start)})` : ''} — about ${Math.round((1 - fc.mid / p) * 100)}% less than today.` };
-    if (p <= avg6) return { kind: 'good', title: 'Good price', text: `${Math.round((1 - p / avg6) * 100)}% below the 6-month average of ${money(avg6)}. No big drop expected in the next 30 days.` };
-    return { kind: 'warn', title: 'Above the usual price', text: `It has typically sold for ${money(avg6)} over the last 6 months (low ${money(low6)}).` };
+
+  function verdict(s) {
+    const b = s.best;
+    if (!b) return s.pending ? { kind: 'pending', title: 'Confirming prices…', text: 'ZooWork agents are opening each store page.' } : { kind: 'neutral', title: 'No confirmed price yet', text: 'Open the stores below to check their current price.' };
+    if (!b.verified) return s.pending
+      ? { kind: 'pending', title: 'Best price so far', text: `From search results — ZooWork is confirming ${s.pending} store page${s.pending === 1 ? '' : 's'} now.` }
+      : { kind: 'neutral', title: 'Unconfirmed price', text: 'We couldn’t confirm this on the store page — double-check before buying.' };
+    const others = data.offers.filter((o) => s.ok(o) && o !== b && o.condition === b.condition).sort((x, y) => x.price - y.price);
+    const next = others[0];
+    const changed = b.snippetPrice != null && Math.abs(b.snippetPrice - b.price) >= 0.01 ? ` Search results said ${money(b.snippetPrice)}.` : '';
+    const how = b.check === 'cached' ? `Confirmed on ${b.store}’s page ${b.savedAgoMs != null ? agoText(b.savedAgoMs) : 'recently'} (saved in Moss).` : `Confirmed on ${b.store}’s page just now by ZooWork.`;
+    return {
+      kind: 'good',
+      title: next ? `Lowest confirmed price — ${money(next.price - b.price)} less than ${next.store}` : 'Lowest confirmed price',
+      text: `${how}${changed}${s.pending ? ` Still checking ${s.pending} more.` : ''}`,
+    };
   }
 
   // ---------- render ----------
   function renderAll() {
-    const searchDone = data && data.verification !== 'pending';
-    if (searchDone && !data.offers.length) {
+    if (data && !data.offers.length && !stream) {
       results.hidden = true;
       empty.hidden = false;
       empty.innerHTML = `<h2>No offers found for “${esc(data.query)}”</h2><p>Try a more specific name or model number${scope === 'stores' ? ', or switch the search to <strong>Web</strong>' : ''}.</p>`;
       return;
     }
     results.hidden = false;
-    renderProduct();
-    renderTrend();
-    renderOffers();
+    const s = data ? summarize() : null;
+    renderProduct(s);
+    renderCheck(s);
+    renderOffers(s);
   }
 
-  function renderProduct() {
-    const b = bestOffer();
-    const t = trend && trend.state === 'done' ? trend.data : null;
-    const v = verdict();
-    const name = (t && t.product) || (b && b.title) || (data && (data.demoQuery || data.query)) || input.value;
-    const verified = data && data.verification === 'verified';
-    const eyebrow = !data ? (searchError ? 'Store search failed' : 'Searching…') : b ? (verified ? 'Best verified price' : data.verification === 'pending' ? 'Best price · verifying…' : 'Best price found') : 'No price yet';
+  function renderProduct(s) {
+    if (!data) {
+      productCard.innerHTML = searchError
+        ? `<div class="product-top"><div class="product-img">${PLACEHOLDER}</div><div><p class="eyebrow">Store search failed</p><p class="product-name">${esc(input.value)}</p></div></div>`
+        : '<div class="product-top"><div class="product-img skel"></div><div style="flex:1"><div class="skel-line" style="width:70%"></div><div class="skel-line" style="width:40%;height:34px;margin-top:10px"></div></div></div>';
+      return;
+    }
+    const b = s.best;
+    const v = verdict(s);
+    const name = (b && b.title) || data.demoQuery || data.query;
     const vIcon = v.kind === 'good' ? '✓' : v.kind === 'warn' ? '!' : v.kind === 'pending' ? '' : 'i';
-    const fact = (l, val, s) => `<div class="fact"><span class="l">${l}</span><span class="v">${val}</span>${s ? `<span class="s">${s}</span>` : ''}</div>`;
-    const pend = trend && trend.state === 'loading' ? '…' : '—';
+    const fact = (l, val, sub) => `<div class="fact"><span class="l">${l}</span><span class="v">${val}</span>${sub ? `<span class="s">${sub}</span>` : ''}</div>`;
     productCard.innerHTML = `
       <div class="product-top">
-        <div class="product-img">${b ? imgHtml(b.image, name) : PLACEHOLDER}</div>
+        <div class="product-img">${b ? imgHtml(b.image, name) : PLACEHOLDER}${b && b.imageVerified ? '<span class="img-ok" title="Photo confirmed on the store page">✓</span>' : ''}</div>
         <div>
           <p class="product-name" title="${esc(name)}">${esc(name)}</p>
-          <p class="eyebrow">${eyebrow}</p>
-          <p class="hero-price">${b ? money(b.price) : '—'}</p>
+          <p class="eyebrow">${b ? (b.verified ? (s.isNew ? 'Best confirmed price · new' : 'Best confirmed price') : 'Best price so far') : 'Searching stores…'}</p>
+          <p class="hero-price${b && !b.verified ? ' pending' : ''}">${b ? money(b.price) : '—'}</p>
           ${b ? `<p class="hero-store">at <strong>${esc(b.store)}</strong> · ${esc(COND[b.condition] || 'New')}${b.wasPrice ? `<span class="hero-was">${money(b.wasPrice)}</span>` : ''}</p>` : ''}
         </div>
       </div>
       <div class="verdict" data-kind="${v.kind}"><span class="vi">${vIcon}</span><div><strong>${esc(v.title)}</strong><p>${esc(v.text)}</p></div></div>
       <div class="facts">
-        ${fact('6-month low', t ? money(t.stats.low6) : pend, t && t.stats.lowMonth ? fmtMonth(t.stats.lowMonth) : '')}
-        ${fact('6-month average', t ? money(t.stats.avg6) : pend, '')}
-        ${fact(`Forecast${t ? ` · ${fmtDay(t.projection.date)}` : ''}`, t ? `~${money(t.projection.mid)}` : pend, t ? `${t.projection.changePct > 0 ? '+' : ''}${t.projection.changePct}% vs typical` : '')}
+        ${fact('Stores compared', s.stores, `${data.offers.length} offers`)}
+        ${fact('Price range', s.low != null ? `${money(s.low)}${s.high > s.low ? `–${money(s.high)}` : ''}` : '—', s.anyVerified ? 'confirmed prices' : 'from search results')}
+        ${fact('Confirmed', `${s.verified + s.cached} of ${s.total}`, s.cached ? `${s.cached} from Moss` : s.pending ? 'checking…' : '')}
       </div>
       <div class="cta-row">
         ${b ? `<a class="btn" href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">Buy at ${esc(b.store)} <span aria-hidden="true">→</span></a>` : ''}
-        ${data && data.offers.length > 1 ? `<a class="btn ghost" href="#offers">Compare ${data.offers.length} offers</a>` : ''}
+        ${data.offers.length > 1 ? `<a class="btn ghost" href="#offers">Compare ${data.offers.length} offers</a>` : ''}
       </div>`;
   }
 
-  function renderTrend() {
-    if (!trend) return;
-    if (trend.state === 'loading') {
-      trendSub.textContent = 'A ZooWork agent is researching 6 months of price history…';
-      trendBody.innerHTML = '<div class="skel-chart" aria-hidden="true"></div><p class="trend-foot">This usually takes 1–3 minutes. Store prices update as they’re verified.</p>';
+  function renderCheck(s) {
+    if (!data) {
+      checkSub.textContent = 'ZooWork agents confirm each price and photo on the store’s own page';
+      checkBody.innerHTML = '<div class="skel-line" style="width:100%;height:10px"></div>' + Array.from({ length: 4 }, () => '<div class="skel-line" style="height:30px;margin-top:10px"></div>').join('');
       return;
     }
-    if (trend.state === 'error') {
-      trendSub.textContent = 'Last 6 months and the next 30 days';
-      trendBody.innerHTML = `<div class="trend-empty"><div><strong>Price trend unavailable</strong><br>${esc(trend.reason)}</div></div>`;
-      return;
-    }
-    const t = trend.data;
-    const b = bestOffer();
-    const saved = trend.cache ? ` · saved ${agoText(trend.cache.ageMs)}${trend.refreshing ? ', refreshing…' : ''}` : '';
-    trendSub.textContent = `${fmtMonth(t.history[0].month)} – today, forecast to ${fmtDay(t.projection.date)} · ${t.confidence} confidence${trend.demo ? ' · sample data' : ''}${saved}`;
-    const stat = (l, v, s) => `<div class="fact"><span class="l">${l}</span><span class="v">${v}</span>${s ? `<span class="s">${s}</span>` : ''}</div>`;
-    const events = (t.events || []).map((e) => `<span class="event">🏷 ${esc(e.name)} · ${fmtDay(e.start)} · ~${e.discount}% off typical</span>`).join('');
-    const sources = (t.sources || []).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.name)}</a>`).join(', ');
-
-    if (tview === 'table') {
-      const rows = t.history.map((h) => `<tr><td>${fmtMonth(h.month)}</td><td class="r">${money(h.typical)}</td><td class="r">${money(h.low)}</td><td>${esc(h.source || '—')}</td></tr>`).join('');
-      trendBody.innerHTML = `<table class="tbl"><thead><tr><th>Month</th><th class="r">Typical</th><th class="r">Lowest</th><th>Source</th></tr></thead><tbody>${rows}
-        <tr><td>Today</td><td class="r">${money(t.current.price)}</td><td class="r">${b ? `${money(b.price)} (best verified)` : '—'}</td><td>${t.current.from === 'agent' ? 'ZooWork agent' : 'Recent months'}</td></tr>
-        <tr class="fc"><td>Forecast ${fmtDay(t.projection.date)}</td><td class="r">~${money(t.projection.mid)}</td><td class="r">${money(t.projection.low)} – ${money(t.projection.high)}</td><td>Projection</td></tr></tbody></table>
-        ${events ? `<div class="event-row">${events}</div>` : ''}
-        <p class="trend-foot"><strong>How the forecast works:</strong> ${esc(t.projection.method)}${t.note ? ` ${esc(t.note)}` : ''}${sources ? `<br>Sources: ${sources}` : ''}</p>`;
-      return;
-    }
-
-    trendBody.innerHTML = `
-      <div class="legend">
-        <span><i class="key-line"></i>Typical price</span>
-        <span><i class="key-dot"></i>Lowest that month</span>
-        <span><i class="key-dash"></i><i class="key-band"></i>30-day forecast &amp; range</span>
-        ${b ? '<span><i class="key-best"></i>Best verified today</span>' : ''}
+    const done = s.verified + s.cached + s.failed;
+    const pct = s.total ? Math.round((done / s.total) * 100) : 100;
+    checkSub.textContent = data.mode === 'demo' ? 'Demo mode — sample data, no live checks'
+      : !s.total ? 'No store pages to check'
+      : s.pending ? `Checking ${s.pending} of ${s.total} store pages in parallel…`
+      : `${s.verified + s.cached} of ${s.total} store pages confirmed`;
+    const rows = data.offers.filter((o) => o.check && o.check !== 'skipped');
+    const statusTxt = { queued: 'In queue', checking: 'Checking…', verified: 'Confirmed', cached: '<span class="long">Confirmed · </span>from Moss', failed: 'Not confirmed' };
+    checkBody.innerHTML = `
+      <div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="Store pages checked">
+        <span class="seg-ok" style="width:${s.total ? ((s.verified + s.cached) / s.total) * 100 : 0}%"></span><span class="seg-bad" style="width:${s.total ? (s.failed / s.total) * 100 : 0}%"></span>
       </div>
-      <div class="chart" id="chart"></div>
-      <div class="trend-stats">
-        ${stat('Typical now', money(t.current.price), t.msrp ? `MSRP ${money(t.msrp)}` : '')}
-        ${stat('6-month range', `${money(t.stats.low6)}–${money(t.stats.high6)}`, '')}
-        ${stat(`Forecast ${fmtDay(t.projection.date)}`, `~${money(t.projection.mid)}`, `${money(t.projection.low)} – ${money(t.projection.high)}`)}
-        ${stat('Best today vs typical', b ? `${b.price <= t.current.price ? '−' : '+'}${Math.abs(Math.round((b.price / t.current.price - 1) * 100))}%` : '—', b ? `${money(b.price)} at ${esc(b.store)}` : '')}
-      </div>
-      ${events ? `<div class="event-row">${events}</div>` : ''}
-      <p class="trend-foot">Forecast: ${esc(t.projection.method)}${sources ? ` Sources: ${sources}.` : ''}</p>`;
-    window.TrendChart.render(document.getElementById('chart'), t, { bestToday: b ? { price: b.price } : null, tooltip });
+      <div class="meter-legend"><span><i class="dot ok"></i>${s.verified} confirmed now</span><span><i class="dot moss"></i>${s.cached} from Moss</span><span><i class="dot run"></i>${s.checking} checking · ${s.queued} to go</span><span><i class="dot bad"></i>${s.failed} not confirmed</span></div>
+      <ul class="check-list">${rows.map((o) => `
+        <li data-check="${o.check}" class="${flashed.has(o.id) && Date.now() - flashed.get(o.id) < 1600 ? 'flash' : ''}">
+          <span class="ck-ic" aria-hidden="true"></span>
+          <span class="ck-store">${esc(o.store)}</span>
+          <span class="ck-status" title="${esc(o.note || '')}">${statusTxt[o.check] || ''}${o.check === 'failed' && o.note ? ` — ${esc(o.note)}` : ''}</span>
+          <span class="ck-price">${o.price != null ? money(o.price) : ''}</span>
+        </li>`).join('') || '<li class="muted">Nothing to check</li>'}</ul>
+      <p class="check-foot">Photos stream through a local image cache · confirmations are saved in Moss for instant repeat searches.</p>`;
   }
 
-  function renderOffers() {
+  function renderOffers(s) {
     if (!data && searchError) {
       compareTitle.textContent = 'Compare stores';
       compareSub.textContent = 'Store search failed';
       offersEl.className = 'offers list';
-      offersEl.innerHTML = `<div class="trend-empty"><div><strong>Couldn’t load store prices</strong><br>${esc(searchError)}<br><button type="button" class="btn ghost" style="margin-top:10px" onclick="document.getElementById('searchBtn').click()">Try again</button></div></div>`;
+      offersEl.innerHTML = `<div class="empty-inline"><strong>Couldn’t load store prices</strong><br>${esc(searchError)}<br><button type="button" class="btn ghost" style="margin-top:10px" onclick="document.getElementById('searchBtn').click()">Try again</button></div>`;
       return;
     }
     if (!data) {
       compareTitle.textContent = 'Compare stores';
-      compareSub.textContent = 'Searching major US stores…';
+      compareSub.textContent = 'Finding products with Tavily…';
       offersEl.className = 'offers list';
       offersEl.innerHTML = Array.from({ length: 5 }, () => '<div class="skeleton-row"></div>').join('');
       return;
     }
-    const verifiedMode = data.verification === 'verified';
-    const ok = (o) => o.price != null && !o.suspect && !o.stale && o.inStock !== false && (!verifiedMode || o.verified === true);
     let list = data.offers.slice();
     if (newOnly.checked) list = list.filter((o) => o.condition === 'new');
     if (verifiedOnly.checked) list = list.filter((o) => o.verified === true);
     if (sortSel.value === 'savings') list.sort((a, b) => discount(b) - discount(a) || (a.price ?? 1e9) - (b.price ?? 1e9));
     else if (sortSel.value === 'relevance') list.sort((a, b) => b.score - a.score);
-    else list.sort((a, b) => (ok(b) - ok(a)) || ((a.price ?? 1e9) - (b.price ?? 1e9)));
+    else list.sort((a, b) => (s.ok(b) - s.ok(a)) || ((a.price ?? 1e9) - (b.price ?? 1e9)));
 
-    const best = bestOffer();
-    const stores = new Set(data.offers.map((o) => o.store)).size;
-    compareTitle.textContent = `Compare ${stores} store${stores === 1 ? '' : 's'}`;
-    const savedNote = data.cache ? (data.stale && btn.disabled ? ` · saved ${agoText(data.cache.ageMs)} — refreshing live…` : ` · from Moss, saved ${agoText(data.cache.ageMs)}`) : '';
-    compareSub.textContent = (verifiedMode
-      ? `${data.summary.verifiedCount} prices confirmed on the store page by ZooWork`
-      : data.verification === 'pending' ? 'Prices from search results — ZooWork is confirming them now' : 'Prices from search results — confirm at the store') + savedNote;
+    const best = s.best;
+    compareTitle.textContent = `Compare ${s.stores} store${s.stores === 1 ? '' : 's'}`;
+    const saved = data.cache ? ` · loaded from Moss (saved ${agoText(data.cache.ageMs)})` : '';
+    compareSub.textContent = (s.pending
+      ? `Prices and photos from Tavily — ZooWork is confirming ${s.pending} now`
+      : s.anyVerified ? `${s.verified + s.cached} prices confirmed on the store page` : 'Prices from search results — confirm at the store') + saved;
     offersEl.className = `offers ${view}`;
     if (!list.length) { offersEl.innerHTML = '<p class="panel-sub" style="padding:12px 6px">No offers match these filters.</p>'; return; }
 
     offersEl.innerHTML = list.map((o) => {
       const tags = [];
       if (o.isBest) tags.push('<span class="tag best">Best price</span>');
-      if (verifiedMode) tags.push(o.verified ? '<span class="tag ok">✓ Verified</span>' : `<span class="tag">${o.checked ? 'Not confirmed' : 'Not checked'}</span>`);
-      else if (data.verification === 'pending') tags.push('<span class="tag pending">Checking…</span>');
+      if (o.check === 'verified') tags.push('<span class="tag ok">✓ Confirmed<span class="long"> by ZooWork</span></span>');
+      else if (o.check === 'cached') tags.push('<span class="tag ok moss">✓ Confirmed<span class="long"> · saved in Moss</span></span>');
+      else if (o.check === 'checking') tags.push('<span class="tag pending"><span class="mini-spin"></span><span class="long">ZooWork </span>checking…</span>');
+      else if (o.check === 'queued') tags.push('<span class="tag">In queue</span>');
+      else if (o.check === 'failed') tags.push('<span class="tag">Not confirmed</span>');
       if (o.condition) tags.push(`<span class="tag">${esc(COND[o.condition] || o.condition)}</span>`);
       if (o.inStock === false) tags.push('<span class="tag">Out of stock</span>');
       const notes = [];
-      if (o.verified && o.snippetPrice != null && Math.abs(o.snippetPrice - o.price) >= 0.01) notes.push(`Search result said ${money(o.snippetPrice)}`);
-      if (verifiedMode && !o.verified && o.note) notes.push(o.note);
+      if (o.verified && o.snippetPrice != null && Math.abs(o.snippetPrice - o.price) >= 0.01) notes.push(`Price updated — search result said ${money(o.snippetPrice)}`);
+      if (o.check === 'failed' && o.note) notes.push(o.note);
       if (o.stale) notes.push(`Price from ${new Date(o.asOf + 'T12:00').toLocaleDateString([], { month: 'short', year: 'numeric' })} — may be outdated`);
-      else if (o.suspect) notes.push('Unusual price — may be an accessory or a different item');
+      else if (o.suspect && !o.verified) notes.push('Unusual price — may be an accessory or a different item');
       const priceTxt = o.price != null ? (o.listing ? 'from ' : '') + money(o.price) : 'See price';
-      const delta = best && o.price != null && o !== best && ok(o) && o.price > best.price ? `+${money(o.price - best.price)} vs best` : '';
-      const muted = !ok(o) && o.price != null;
-      return `<a class="row${o.isBest ? ' is-best' : ''}${muted ? ' is-muted' : ''}" href="${esc(o.url)}" target="_blank" rel="noopener noreferrer">
-        <span class="thumb">${imgHtml(o.image, o.title)}</span>
+      const delta = best && o.price != null && o !== best && s.ok(o) && o.price > best.price ? `+${money(o.price - best.price)} vs best` : '';
+      const muted = !s.ok(o) && o.price != null;
+      const fl = flashed.has(o.id) && Date.now() - flashed.get(o.id) < 1600 ? ' flash' : '';
+      return `<a class="row${o.isBest ? ' is-best' : ''}${muted ? ' is-muted' : ''}${o.check === 'checking' ? ' is-checking' : ''}${fl}" data-id="${esc(o.id)}" href="${esc(o.url)}" target="_blank" rel="noopener noreferrer">
+        <span class="thumb">${imgHtml(o.image, o.title)}${o.imageVerified ? '<span class="img-ok" title="Photo confirmed on the store page">✓</span>' : ''}</span>
         <span class="row-main">
           <span class="row-top"><span class="store">${esc(o.store)}</span>${tags.join('')}</span>
           <p class="row-title" title="${esc(o.title)}">${esc(o.title)}</p>
           <p class="row-note">${esc(notes.join(' · '))}</p>
         </span>
-        <span class="row-price"><span class="p${o.price == null ? ' none' : ''}">${priceTxt}</span>
+        <span class="row-price"><span class="p${o.price == null ? ' none' : ''}${o.verified ? '' : ' unconfirmed'}">${priceTxt}</span>
           ${o.wasPrice ? `<span class="w"><s>${money(o.wasPrice)}</s><span class="off">−${discount(o)}%</span></span>` : ''}
           ${delta ? `<span class="delta">${delta}</span>` : ''}</span>
         <span class="row-cta">View <span aria-hidden="true">→</span></span>
       </a>`;
     }).join('');
   }
+
+  [newOnly, verifiedOnly, sortSel].forEach((c) => c.addEventListener('change', () => data && renderOffers(summarize())));
 
   // ---------- boot ----------
   renderChips();
