@@ -170,6 +170,8 @@ async function handleSearch(req, res, url) {
         } else if (ev.type === 'preliminary') {
           send('preliminary', { mode: 'live', query: q, scope, offers: ev.offers, summary: ev.summary, verification: ZOOWORK_KEY ? 'pending' : 'off', fetchedAt: new Date().toISOString() });
         } else if (ev.type === 'offer') {
+          const o = ev.offer;
+          if (o.check === 'verified' || o.check === 'failed') console.log(`    [check] ${o.store} ${o.check === 'verified' ? `✓ $${o.price}` : `✗ ${o.note || ''}`} — ${String(o.title).slice(0, 60)}`);
           send('offer', ev.offer);
         }
       },
