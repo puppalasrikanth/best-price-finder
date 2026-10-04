@@ -61,3 +61,20 @@ test('search without a ZooWork key still returns offers (regression)', async () 
   assert.strictEqual(out.verification, 'off');
   assert.ok(events.includes('preliminary'));
 });
+
+test('every store check gets its own agent slot and they all run at once', async () => {
+  const { runPool, MAX_AGENTS } = require('../lib/pipeline');
+  assert.strictEqual(MAX_AGENTS(), 10);
+  const slots = [];
+  let live = 0;
+  let peak = 0;
+  const items = Array.from({ length: 10 }, (_, i) => i);
+  await runPool(items, Math.min(MAX_AGENTS(), items.length), async (_, slot) => {
+    slots.push(slot);
+    live += 1; peak = Math.max(peak, live);
+    await new Promise((r) => setTimeout(r, 20));
+    live -= 1;
+  });
+  assert.strictEqual(peak, 10);
+  assert.strictEqual(new Set(slots).size, 10, 'ten different agents');
+});

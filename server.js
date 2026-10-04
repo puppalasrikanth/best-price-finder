@@ -69,7 +69,7 @@ const budget = new Budget({
   suggestTavily: num('SUGGEST_TAVILY_DAILY_LIMIT', PROD ? 1500 : 0), // Tavily type-ahead fallbacks per day
   zoowork: num('ZOOWORK_DAILY_LIMIT', PROD ? 300 : 0),           // store-page checks per day
 });
-const zooworkSlots = new Semaphore(num('ZOOWORK_GLOBAL_MAX', 6)); // parallel ZooWork sessions across all visitors
+const zooworkSlots = new Semaphore(num('ZOOWORK_GLOBAL_MAX', 20)); // parallel ZooWork sessions across all visitors
 const LIMITS = {
   searchPerMin: num('SEARCH_PER_MINUTE', 6), searchPerHour: num('SEARCH_PER_HOUR', 60),
   suggestPerMin: num('SUGGEST_PER_MINUTE', 90), imgPerMin: num('IMAGES_PER_MINUTE', 400),
@@ -341,6 +341,11 @@ const server = http.createServer((req, res) => {
 
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
+    if (ZOOWORK_KEY && process.env.ZOOWORK_WARMUP !== 'false') {
+      const { warmAgents } = require('./lib/zoowork');
+      const { MAX_AGENTS } = require('./lib/pipeline');
+      warmAgents({ apiKey: ZOOWORK_KEY, count: MAX_AGENTS() }).catch((e) => console.log(`[zoowork] warm-up failed: ${e.message}`));
+    }
     console.log(`\n  PriceScout — powered by ZooWork & Tavily\n  Running at http://localhost:${PORT}`);
     console.log(LIVE
       ? `  Mode: LIVE (Tavily ${DEPTH} search, ${DEPTH === 'advanced' ? 4 : 2} credits per search — two queries)\n`
