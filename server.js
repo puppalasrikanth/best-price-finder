@@ -346,7 +346,7 @@ if (require.main === module) {
       const { MAX_AGENTS } = require('./lib/pipeline');
       warmAgents({ apiKey: ZOOWORK_KEY, count: MAX_AGENTS() }).catch((e) => console.log(`[zoowork] warm-up failed: ${e.message}`));
     }
-    console.log(`\n  PriceScout — powered by ZooWork & Tavily\n  Running at http://localhost:${PORT}`);
+    console.log(`\n  PriceScout — powered by ZooWork, Tavily & Moss\n  Running at http://localhost:${PORT}`);
     console.log(LIVE
       ? `  Mode: LIVE (Tavily ${DEPTH} search, ${DEPTH === 'advanced' ? 4 : 2} credits per search — two queries)\n`
       : '  Mode: DEMO — add your Tavily key to .env (TAVILY_API_KEY=tvly-...) and restart for live results\n');

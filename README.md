@@ -1,6 +1,6 @@
 # PriceScout — every price, confirmed
 
-**Powered by ZooWork & Tavily.** Pick a product and PriceScout shows prices and photos from major US stores as soon as Tavily answers, then ZooWork agents open each store page in parallel — cheapest offers first — to confirm price, photo and stock, updating each row live.
+**Powered by ZooWork, Tavily & Moss.** Pick a product and PriceScout shows prices and photos from major US stores as soon as Tavily answers, then ZooWork agents open each store page in parallel — cheapest offers first — to confirm price, photo and stock, updating each row live.
 
 ## Run it
 
