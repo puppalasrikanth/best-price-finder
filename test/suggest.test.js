@@ -81,3 +81,31 @@ test('/api/suggest asks Moss and Tavily and returns one unique list', async (t) 
   assert.ok(tav.suggestions.every((x) => x.source === 'tavily'));
   assert.strictEqual(tavilyCalls, 1, 'Tavily answers are cached');
 });
+
+test('suggestions skip accessories, parts, Q&A pages and cut-off names', () => {
+  const { buildSuggestions } = require('../lib/suggest');
+  const raw = { results: [
+    { url: 'https://www.walmart.com/ip/Samsung-Gal-S5-Mini-SView-Cover-Gold/1', title: 'Samsung Gal S5 Mini SView Cover-Gold' },
+    { url: 'https://www.bestbuy.com/site/questions/samsung-galaxy-book4/6572182/question/x', title: "Hello, I'm interested in purchasing a Samsung Gal – Q&A" },
+    { url: 'https://www.ebay.com/itm/1', title: 'Cartoon Animal Capybara Phone Case For Samsung Gal' },
+    { url: 'https://www.amazon.com/dp/B0DF', title: 'Perzework Rear Back Glass Replacement for Samsung Galaxy S10' },
+    { url: 'https://www.target.com/p/x', title: 'Samsung Galaxy S21 5G (128GB' },
+    { url: 'https://www.bestbuy.com/site/samsung-galaxy-s25/123.p', title: 'Samsung - Galaxy S25 128GB (Unlocked) - Navy' },
+  ] };
+  assert.deepStrictEqual(buildSuggestions(raw, 'samsung gal').map((x) => x.name), ['Samsung Galaxy S25 128GB (Unlocked) - Navy']);
+});
+
+test('Moss usage-limit errors pause the catalog instead of failing every keystroke', async () => {
+  const { Catalog } = require('../lib/catalog');
+  const logs = [];
+  const c = new Catalog({ projectId: 'p', projectKey: 'k', log: (m) => logs.push(m), clientFactory: async () => ({
+    getIndex: async () => ({}), loadIndex: async () => { throw new Error('nope'); },
+    query: async () => { throw new Error('Invalid response: HTTP 429 Too Many Requests: {"error":"USAGE_LIMIT_EXCEEDED","message":"credit_exhausted"}'); },
+  }) });
+  await c.init();
+  assert.strictEqual(await c.suggest('samsung'), null);
+  assert.strictEqual(c.info().status, 'paused');
+  assert.strictEqual(await c.suggest('samsung'), null, 'no further calls while paused');
+  assert.strictEqual(c.stats.lookups, 1);
+  assert.strictEqual(logs.filter((l) => /usage limit/.test(l)).length, 1);
+});
