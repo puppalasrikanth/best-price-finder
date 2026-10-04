@@ -298,6 +298,9 @@ body.has-results .landing { display: none; }
 .sg-name { font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sg-name mark { background: none; color: inherit; font-weight: 750; }
 .sg-store { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.sg-src { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; letter-spacing: .02em; vertical-align: 1px; }
+.sg-src.moss { background: color-mix(in srgb, #7c3aed 14%, transparent); color: #7c3aed; }
+.sg-src.tav { background: color-mix(in srgb, #0891b2 14%, transparent); color: #0891b2; }
 .sg-empty { padding: 10px 12px; font-size: 13.5px; color: var(--muted); }
 .sg-foot { padding: 6px 10px 4px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border); margin-top: 4px; }
 .sg-foot kbd { font: inherit; font-size: 11px; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; background: var(--surface-2); }

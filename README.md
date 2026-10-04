@@ -18,7 +18,7 @@ Without a key the portal runs in **demo mode** using saved sample results, so yo
 
 ## Credits
 
-Each new search uses 2 Tavily credits (`SEARCH_DEPTH=advanced`), or 1 credit with `SEARCH_DEPTH=basic`. Repeat searches within `CACHE_MINUTES` (default 30) are free. The free Tavily plan includes 1,000 credits per month.
+Each new search runs two Tavily queries in parallel (all stores, and all stores except Amazon, so Amazon's search pages can't crowd out the rest): 2 credits with `SEARCH_DEPTH=fast` or `basic`, 4 with `advanced`. Repeat searches within `CACHE_MINUTES` (default 30) are free. The free Tavily plan includes 1,000 credits per month.
 
 ## Deploying publicly (Railway)
 
@@ -43,15 +43,15 @@ The image proxy resolves DNS and refuses private, loopback and cloud-metadata ad
 
 - **Seed:** the ~100,000 most-reviewed products from [Amazon Reviews 2023](https://amazon-reviews-2023.github.io/) (McAuley Lab, UCSD) across Electronics, Cell Phones, Toys, Video Games, Appliances, Office and Musical Instruments. `scripts/import-catalog.js` streams each category's gzipped metadata once (very roughly 3–5 GB in total, nothing large kept on disk), keeps the top products by number of ratings, cleans the names and uploads each category as soon as it's done. It starts automatically in the background on first launch (`CATALOG_AUTO_IMPORT=false` to skip) and resumes if interrupted; run `node scripts/import-catalog.js --restart` to rebuild. Note the dataset ends in Sept 2023 — newer products come from learning.
 - **Learning:** every product name Tavily returns (suggestions and search results) is added automatically.
-- **Lookup:** `/api/suggest` asks Moss first; if Moss has fewer than 3 matches or takes longer than `CATALOG_TIMEOUT_MS` (400 ms), it falls back to Tavily and merges the results. The dropdown shows the source.
+- **Lookup:** every keystroke asks Moss (`/api/suggest?source=moss`, milliseconds) and, after a short pause, Tavily (`source=tavily`, which also reads every product listed on store search pages). The page merges both into one list of up to 10 unique products matching what's typed — Moss first, Tavily's extra products added as they arrive, color/condition variants shown once — and tags each with its source. Without `source`, the endpoint queries both in parallel and returns the merged list.
 - Moss's free tier allows 10 indexes × 100,000 documents; the catalog uses one index (`CATALOG_SIZE`, default 100,000).
 
 **Search persistence (off).** `MOSS_ENABLED=false`: store confirmations are kept in memory for 30 minutes (`OFFER_CACHE_MINUTES`). Set `MOSS_ENABLED=true` to persist them in Moss.
 
 ## How it works
 
-1. **Type-ahead** (`/api/suggest`): after 3+ characters the Moss product catalog suggests matching products; Tavily fills in when Moss has too few matches.
-2. **Instant results** (`/api/search`, Server-Sent Events): Tavily (`SEARCH_DEPTH=fast`) returns store pages with images and prices; the page renders the moment they're parsed (`preliminary` event). Picking a suggestion shows that product's name and photo instantly while Tavily runs.
+1. **Type-ahead** (`/api/suggest`): from 2 characters the Moss product catalog suggests matching products instantly; from 3 characters Tavily's live store results are merged in, de-duplicated.
+2. **Instant results** (`/api/search`, Server-Sent Events): Tavily (`SEARCH_DEPTH=fast`) returns store pages with images and prices. Store search pages ("Amazon.com : samsung galaxy") are split into one offer per named product, accessories are dropped, and the best `MAX_PRODUCTS` (default 10) are kept, spread across stores. The page renders the moment they're parsed (`preliminary` event). Picking a suggestion shows that product's name and photo instantly while Tavily runs.
 3. **Recent confirmations**: pages confirmed in the last 30 minutes update instantly after the first render and are not re-checked; failed checks are always retried.
 4. **Live confirmation**: the cheapest remaining pages (up to `ZOOWORK_MAX_PAGES`) each get their own ZooWork session, run on a pool of `ZOOWORK_CONCURRENCY` agents (default 3) in parallel. Each agent confirms price, main product photo, condition and stock; the page updates that row as each one finishes (`offer` events). Only confirmed, in-stock prices can win best price.
 5. **Stop when not needed**: if the shopper leaves or starts another search, no new ZooWork checks are started.

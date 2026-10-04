@@ -4,7 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { runSearch } = require('./lib/pipeline');
-const { fetchSuggestions, buildSuggestions } = require('./lib/suggest');
+const { fetchSuggestions, buildSuggestions, mergeSuggestions } = require('./lib/suggest');
 const { buildOffers } = require('./lib/extract');
 const { Store } = require('./lib/store');
 const { Catalog } = require('./lib/catalog');
@@ -188,47 +188,62 @@ async function handleSearch(req, res, url) {
 
 // Type-ahead: Moss product catalog first (fast); Tavily only when Moss has too few matches or is slow.
 // Products found through Tavily are added to the catalog so it keeps growing.
+// Type-ahead. Moss (product catalog) and Tavily (live store search) are both asked, and the
+// results are merged into one list of unique products matching what was typed.
+//   ?source=moss    Moss only — answers in milliseconds
+//   ?source=tavily  Tavily only — slower; new names are added to the Moss catalog
+//   (default)       both in parallel, merged
+// The page calls moss and tavily separately so Moss results show instantly and Tavily's
+// extra products are merged in when they arrive.
+async function suggestFromMoss(q) {
+  const memo = await store.get('suggest', { key: `moss:${q}`, query: q, maxAgeMs: 10 * 60_000 });
+  if (memo) return memo.payload;
+  const list = (await catalog.suggest(q, { limit: 10 })) || []; // [] when Moss is off, empty or slow
+  if (list.length) store.put('suggest', { key: `moss:${q}`, payload: list });
+  return list;
+}
+
+async function suggestFromTavily(q) {
+  const memo = await store.get('suggest', { key: `tavily:${q}`, query: q, maxAgeMs: TTL.suggest });
+  if (memo) return memo.payload;
+  if (!LIVE) {
+    const fixtures = ['demo', 'airpods', 'samsung-galaxy'].map((f) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', `${f}.json`), 'utf8')));
+    return fixtures.flatMap((fx) => buildSuggestions(fx, q));
+  }
+  if (!budget.take('suggestTavily')) throw Object.assign(new Error('Daily Tavily suggestion limit reached'), { quiet: true });
+  const list = buildSuggestions(await fetchSuggestions(q, { apiKey: API_KEY }), q);
+  catalog.learn(list); // Moss gets smarter: next time these come straight from the catalog
+  store.put('suggest', { key: `tavily:${q}`, payload: list });
+  return list;
+}
+
 async function handleSuggest(req, res, url) {
-  const q = (url.searchParams.get('q') || '').trim().replace(/\s+/g, ' ').slice(0, 80);
-  if (q.length < 3 || !SUGGEST_ENABLED) return sendJson(res, 200, { query: q, suggestions: [] });
+  const q = (url.searchParams.get('q') || '').replace(/\s+/g, ' ').replace(/^\s+/, '').slice(0, 80);
+  const source = url.searchParams.get('source') || 'both';
+  if (q.trim().length < 2 || !SUGGEST_ENABLED) return sendJson(res, 200, { query: q, suggestions: [] });
   if (!limiter.allow(`suggest:${clientIp(req)}`, LIMITS.suggestPerMin, 60_000).ok) return sendJson(res, 429, { query: q, suggestions: [], error: 'Slow down a little' });
   const t0 = Date.now();
-  const memo = await store.get('suggest', { key: q, query: q, maxAgeMs: TTL.suggest });
-  if (memo) return sendJson(res, 200, { query: q, ...memo.payload, cached: true, tookMs: Date.now() - t0 });
-
-  const fromMoss = await catalog.suggest(q); // null = unavailable or slower than CATALOG_TIMEOUT_MS
-  if (fromMoss && fromMoss.length >= 3) {
-    const payload = { suggestions: fromMoss, source: 'moss' };
-    store.put('suggest', { key: q, payload });
-    console.log(`[suggest] "${q}" -> ${fromMoss.length} from Moss in ${Date.now() - t0} ms`);
-    return sendJson(res, 200, { query: q, ...payload, tookMs: Date.now() - t0 });
-  }
-
-  if (!LIVE) {
-    const fixtures = ['demo', 'airpods'].map((f) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', `${f}.json`), 'utf8')));
-    const suggestions = [...(fromMoss || []), ...fixtures.flatMap((fx) => buildSuggestions(fx, q))].slice(0, 7);
-    return sendJson(res, 200, { query: q, suggestions, source: 'demo', demo: true });
-  }
-  if (!budget.take('suggestTavily')) return sendJson(res, 200, { query: q, suggestions: fromMoss || [], source: 'moss' });
-  try {
-    const raw = await fetchSuggestions(q, { apiKey: API_KEY });
-    const fromTavily = buildSuggestions(raw, q);
-    catalog.learn(fromTavily);
-    const seen = new Set();
-    const suggestions = [...(fromMoss || []), ...fromTavily].filter((x) => {
-      const k = x.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').slice(0, 6).join(' ');
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    }).slice(0, 7);
-    const payload = { suggestions, source: fromMoss && fromMoss.length ? 'moss+tavily' : 'tavily' };
-    store.put('suggest', { key: q, payload });
-    console.log(`[suggest] "${q}" -> ${fromMoss ? fromMoss.length : 0} Moss + ${fromTavily.length} Tavily in ${Date.now() - t0} ms`);
-    sendJson(res, 200, { query: q, ...payload, tookMs: Date.now() - t0 });
-  } catch (err) {
-    console.error(`[suggest] "${q}" failed:`, err.message);
-    sendJson(res, 200, { query: q, suggestions: fromMoss || [], source: 'moss', error: err.message });
-  }
+  const wantMoss = source !== 'tavily';
+  const wantTavily = source !== 'moss' && q.trim().length >= 3;
+  const [m, t] = await Promise.allSettled([
+    wantMoss ? suggestFromMoss(q) : Promise.resolve([]),
+    wantTavily ? suggestFromTavily(q) : Promise.resolve([]),
+  ]);
+  const moss = m.status === 'fulfilled' ? m.value : [];
+  const tavily = t.status === 'fulfilled' ? t.value : [];
+  const error = t.status === 'rejected' ? t.reason.message : undefined;
+  if (t.status === 'rejected' && !t.reason.quiet) console.error(`[suggest] Tavily "${q}" failed:`, error);
+  const suggestions = mergeSuggestions([moss, tavily], q, 10);
+  console.log(`[suggest] "${q}" (${source}) -> ${moss.length} Moss + ${tavily.length} Tavily = ${suggestions.length} unique in ${Date.now() - t0} ms`);
+  sendJson(res, 200, {
+    query: q,
+    source: source === 'both' ? (moss.length && tavily.length ? 'moss+tavily' : moss.length ? 'moss' : 'tavily') : source,
+    suggestions,
+    counts: { moss: moss.length, tavily: tavily.length },
+    ...(LIVE ? {} : { demo: true }),
+    ...(error ? { error } : {}),
+    tookMs: Date.now() - t0,
+  });
 }
 
 // Image streaming cache: product images are fetched once from the store CDN, kept on disk
@@ -326,11 +341,11 @@ if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log(`\n  PriceScout — powered by ZooWork & Tavily\n  Running at http://localhost:${PORT}`);
     console.log(LIVE
-      ? `  Mode: LIVE (Tavily ${DEPTH} search, ${DEPTH === 'advanced' ? 2 : 1} credit(s) per search)\n`
+      ? `  Mode: LIVE (Tavily ${DEPTH} search, ${DEPTH === 'advanced' ? 4 : 2} credits per search — two queries)\n`
       : '  Mode: DEMO — add your Tavily key to .env (TAVILY_API_KEY=tvly-...) and restart for live results\n');
     console.log(ZOOWORK_KEY ? '  Price verification: ZooWork agent (checks each store page)\n' : '  Price verification: OFF — add ZOOWORK_API_KEY to .env to verify prices\n');
     console.log(MOSS_ON ? '  Persistence: Moss (loading index…)\n' : '  Persistence: off (Moss disabled) — store confirmations kept in memory for this session\n');
-    console.log(catalog.status === 'off' ? '  Type-ahead: Tavily (add MOSS_PROJECT_ID / MOSS_PROJECT_KEY for the Moss product catalog)\n' : '  Type-ahead: Moss product catalog first, Tavily fallback\n');
+    console.log(catalog.status === 'off' ? '  Type-ahead: Tavily (add MOSS_PROJECT_ID / MOSS_PROJECT_KEY for the Moss product catalog)\n' : '  Type-ahead: Moss catalog + Tavily, merged into one unique list\n');
   });
   store.init();
   catalog.init().then(() => {

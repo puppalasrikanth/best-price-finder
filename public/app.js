@@ -86,17 +86,20 @@
   }));
   form.addEventListener('submit', (e) => { e.preventDefault(); closeSuggest(); const q = input.value.trim(); if (q.length >= 2) search(q); });
 
-  // ---------- type-ahead (Tavily product suggestions) ----------
+  // ---------- type-ahead: Moss catalog + Tavily, merged into one unique list ----------
+  // Moss answers in milliseconds and is shown first; Tavily's live store results arrive a
+  // moment later and any products Moss didn't have are merged in.
   const sugEl = $('#suggest');
-  const sugCache = new Map(); // lowercased query -> suggestions
+  const sugCache = new Map(); // "moss:<q>" / "tavily:<q>" -> suggestions
   let sugItems = [];
   let sugActive = -1;
   let sugTimer = null;
-  let sugCtrl = null;
+  let sugTavilyTimer = null;
+  let sugCtrl = null; // aborts both lookups when the box closes
   let sugQuery = '';
-  let sugLoading = false;
-  let sugSource = 'tavily';
-  const sugSources = new Map();
+  let sugLoading = false; // Tavily still looking
+  let sugSource = 'moss';
+  const SUG_LIMIT = 10;
 
   const sugNorm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const sugMatch = (name, q) => {
@@ -104,6 +107,11 @@
     const flat = n.replace(/ /g, '');
     return sugNorm(q).split(' ').filter(Boolean).every((w) => n.includes(` ${w}`) || flat.includes(w));
   };
+  // Same product with a different color/condition wording counts once.
+  const sugKey = (name) => sugNorm(name)
+    .replace(/\b(black|white|silver|blue|red|green|pink|gray|grey|gold|midnight|starlight|graphite|purple|yellow|titanium|natural)\b/g, '')
+    .replace(/\b(new|renewed|refurbished|restored|pre ?owned|used|open box|unlocked)\b/g, '')
+    .split(' ').filter(Boolean).slice(0, 6).join(' ');
   const highlight = (name, q) => {
     let html = esc(name);
     for (const w of sugNorm(q).split(' ').filter((x) => x.length > 1).sort((a, b) => b.length - a.length)) {
@@ -112,12 +120,42 @@
     return html;
   };
 
+  // Results for this exact text, or the longest typed-so-far prefix we already have, narrowed
+  // to what's typed now — so the list updates on every keystroke without waiting.
+  function cachedFor(src, q) {
+    const key = q.toLowerCase();
+    for (let k = key.length; k >= 2; k--) {
+      const hit = sugCache.get(`${src}:${key.slice(0, k)}`);
+      if (hit) return { items: hit.filter((x) => sugMatch(x.name, q)), exact: k === key.length };
+    }
+    return { items: [], exact: false };
+  }
+
+  function mergeSuggest(q) {
+    const moss = cachedFor('moss', q);
+    const tav = cachedFor('tavily', q);
+    const seen = new Set();
+    const out = [];
+    for (const x of [...moss.items, ...tav.items]) {
+      const k = sugKey(x.name);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(x);
+      if (out.length >= SUG_LIMIT) break;
+    }
+    const m = out.some((x) => x.source === 'moss');
+    const t = out.some((x) => x.source !== 'moss');
+    sugSource = m && t ? 'moss+tavily' : m ? 'moss' : 'tavily';
+    return { items: out, mossExact: moss.exact, tavilyExact: tav.exact };
+  }
+
   function closeSuggest() {
     sugEl.hidden = true;
     input.setAttribute('aria-expanded', 'false');
     input.removeAttribute('aria-activedescendant');
     sugActive = -1;
     clearTimeout(sugTimer);
+    clearTimeout(sugTavilyTimer);
     if (sugCtrl) sugCtrl.abort();
   }
 
@@ -143,11 +181,11 @@
         ? `<span class="sg-thumb">${it.image ? `<img src="${esc(it.image)}" alt="" referrerpolicy="no-referrer" onerror="this.outerHTML=window.__ph">` : PLACEHOLDER}</span>`
         : `<span class="sg-thumb ic">${it.kind === 'recent' ? '↺' : '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'}</span>`;
       const label = it.kind === 'search' ? `Search for “<mark>${esc(it.name)}</mark>”` : highlight(it.name, q);
-      const side = it.kind === 'product' ? esc(it.store) : it.kind === 'recent' ? 'Recent' : '';
+      const side = it.kind === 'product' ? `${esc(it.store)}<span class="sg-src ${it.source === 'moss' ? 'moss' : 'tav'}">${it.source === 'moss' ? 'Moss' : 'Tavily'}</span>` : it.kind === 'recent' ? 'Recent' : '';
       html += `<div class="sg-opt" role="option" id="sg-${i}" data-i="${i}" aria-selected="${i === sugActive}"><span>${thumb}</span><span class="sg-name">${label}</span><span class="sg-store">${side}</span></div>`;
     });
-    if (sugLoading) html += `<div class="sg-head"><span class="spinner"></span>Looking up products with Tavily…</div>`;
-    else if (q.length >= 3 && !sugItems.length && sugQuery === q.toLowerCase()) html += '<div class="sg-empty">No matching products found — press Enter to search anyway.</div>';
+    if (sugLoading) html += `<div class="sg-head"><span class="spinner"></span>${sugItems.length ? 'Adding live store results from Tavily…' : 'Looking up products in Moss and Tavily…'}</div>`;
+    else if (q.length >= 3 && !sugItems.length && sugQuery === q.toLowerCase() && !sugLoading) html += '<div class="sg-empty">No matching products found — press Enter to search anyway.</div>';
     html += '<div class="sg-foot"><kbd>↑</kbd> <kbd>↓</kbd> to choose · <kbd>Enter</kbd> to compare prices · <kbd>Esc</kbd> to close</div>';
     sugEl.innerHTML = html;
     sugEl.hidden = false;
@@ -156,36 +194,41 @@
     else input.removeAttribute('aria-activedescendant');
   }
 
-  async function fetchSuggest(q) {
-    const key = q.toLowerCase();
-    if (sugCache.has(key)) { sugItems = sugCache.get(key); sugSource = sugSources.get(key) || 'tavily'; sugQuery = key; sugLoading = false; renderSuggest(); return; }
-    // Reuse a shorter query's results while the user keeps typing (saves Tavily credits).
-    for (let k = key.length - 1; k >= 3; k--) {
-      const prev = sugCache.get(key.slice(0, k));
-      if (prev) {
-        const still = prev.filter((x) => sugMatch(x.name, q));
-        if (still.length >= 3) { sugItems = still; sugQuery = key; sugLoading = false; renderSuggest(); return; }
-        sugItems = still;
-        break;
-      }
-    }
-    if (sugCtrl) sugCtrl.abort();
-    sugCtrl = new AbortController();
-    sugLoading = true;
-    renderSuggest();
+  async function fetchSource(src, q, signal) {
+    const key = `${src}:${q.toLowerCase()}`;
+    if (sugCache.has(key)) return;
     try {
-      const r = await fetch('/api/suggest?' + new URLSearchParams({ q }), { signal: sugCtrl.signal });
+      const r = await fetch('/api/suggest?' + new URLSearchParams({ q, source: src }), { signal });
       const j = await r.json();
-      if (!j.error) { sugCache.set(key, j.suggestions || []); sugSources.set(key, j.source || 'tavily'); }
-      if (input.value.trim().toLowerCase() !== key) return;
-      sugItems = j.suggestions || [];
-      sugSource = j.source || 'tavily';
-      sugQuery = key;
+      if (!j.error || (j.suggestions || []).length) sugCache.set(key, (j.suggestions || []).map((x) => ({ ...x, source: x.source || src })));
     } catch (e) {
-      if (e.name === 'AbortError') return;
+      if (e.name === 'AbortError') throw e;
     }
-    sugLoading = false;
+  }
+
+  function showSuggest(q) {
+    const merged = mergeSuggest(q);
+    sugItems = merged.items;
+    sugQuery = q.toLowerCase();
+    sugLoading = q.length >= 3 && !merged.tavilyExact;
     if (document.activeElement === input) renderSuggest();
+  }
+
+  async function fetchSuggest(q) {
+    if (sugCtrl) sugCtrl.abort();
+    const ctrl = new AbortController();
+    sugCtrl = ctrl;
+    const current = () => input.value.trim() === q && !ctrl.signal.aborted;
+    // Moss: right away. Tavily: after a slightly longer pause, so fast typing doesn't spend credits.
+    fetchSource('moss', q, ctrl.signal).then(() => current() && showSuggest(q)).catch(() => {});
+    clearTimeout(sugTavilyTimer);
+    if (q.length < 3) return;
+    sugTavilyTimer = setTimeout(() => {
+      if (!current()) return;
+      fetchSource('tavily', q, ctrl.signal)
+        .then(() => { if (current()) { sugCache.has(`tavily:${q.toLowerCase()}`) || sugCache.set(`tavily:${q.toLowerCase()}`, []); showSuggest(q); } })
+        .catch(() => {});
+    }, 350);
   }
 
   function chooseSuggestion(i) {
@@ -200,10 +243,9 @@
     const q = input.value.trim();
     sugActive = -1;
     clearTimeout(sugTimer);
-    if (q.length < 3) { sugItems = []; sugLoading = false; renderSuggest(); return; }
-    sugLoading = !sugCache.has(q.toLowerCase());
-    renderSuggest();
-    sugTimer = setTimeout(() => fetchSuggest(q), 180); // Moss answers in ms, so a short pause is enough
+    if (q.length < 2) { sugItems = []; sugLoading = false; clearTimeout(sugTavilyTimer); if (sugCtrl) sugCtrl.abort(); renderSuggest(); return; }
+    showSuggest(q); // narrow what we already have, instantly
+    sugTimer = setTimeout(() => fetchSuggest(q), 120);
   });
   input.addEventListener('focus', () => { if (!btn.disabled || input.value.trim().length < 3) renderSuggest(); });
   input.addEventListener('blur', () => setTimeout(closeSuggest, 120));
